@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Windows troubleshooting
+    url: https://github.com/Felix561/vellora-windows/blob/main/docs/TROUBLESHOOTING.md
+    about: Start here for microphone, key, shortcut, paste, startup, and installation problems.
+  - name: Security reporting
+    url: https://github.com/Felix561/vellora-windows/blob/main/SECURITY.md
+    about: Follow the private-reporting guidance; do not publish vulnerability details in a normal issue.

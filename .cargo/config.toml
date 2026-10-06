@@ -1,0 +1,4 @@
+[http]
+# Use the platform trust store and keep TLS certificate verification enabled.
+# Machine-specific CA/proxy settings belong in the user's Cargo configuration.
+check-revoke = true

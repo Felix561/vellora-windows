@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest a focused improvement for Windows dictation.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Vellora currently focuses on Windows dictation. Check the [roadmap](https://github.com/Felix561/vellora-windows/blob/main/docs/ROADMAP.md) for existing plans.
+        Use synthetic examples. Do not include API keys, real transcripts/audio, clipboard contents, or personal paths.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the Windows workflow and who would benefit.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested behavior
+      description: Give a small before/after example using dummy data.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround or alternatives
+  - type: textarea
+    id: considerations
+    attributes:
+      label: Privacy, accessibility, or compatibility considerations
+      description: Optional. Mention network use, costs, keyboard use, or clipboard behavior if relevant.

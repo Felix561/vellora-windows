@@ -1,0 +1,84 @@
+name: Bug report
+description: Report a reproducible problem in the Windows beta using dummy data.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [Windows troubleshooting](https://github.com/Felix561/vellora-windows/blob/main/docs/TROUBLESHOOTING.md) first. Vellora currently supports Windows only.
+        Do not include API keys, real transcripts/audio, clipboard contents, personal paths, database files, or app-data folders. Review and crop screenshots before sharing.
+        For vulnerabilities, follow [SECURITY.md](https://github.com/Felix561/vellora-windows/blob/main/SECURITY.md) instead.
+  - type: input
+    id: app-version
+    attributes:
+      label: Vellora version
+      description: Find it in Help & About. For a source build, include the commit if known.
+      placeholder: "0.2.21"
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Windows 10 or 11, and build number if known. Do not include a device or account name.
+      placeholder: "Windows 11, 64-bit"
+    validations:
+      required: true
+  - type: dropdown
+    id: appearance
+    attributes:
+      label: Appearance
+      options:
+        - Notebook
+        - Windows Classic
+        - Both
+        - Cannot open the app
+    validations:
+      required: true
+  - type: dropdown
+    id: transcription-model
+    attributes:
+      label: Transcription model
+      options:
+        - GPT-4o mini Transcribe
+        - GPT-4o Transcribe
+        - Whisper 1
+        - GPT-4o Transcribe Diarize
+        - Not relevant / unknown
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include whether cleanup, automatic paste, or history saving matters. Use a dummy sentence and a non-sensitive destination such as Notepad.
+      placeholder: |
+        1. Open...
+        2. Hold Ctrl + Win and say "This is a test sentence."
+        3. Release both keys...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and frequency
+      description: Describe the visible error category and whether it repeats. Exclude transcript text, keys, and private paths.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Optional support diagnostics
+      description: Use Help & About > Copy support information and review the summary before pasting. Do not paste full logs or app-data files.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I reviewed this report and any attachments; they contain no keys, real transcripts/audio, clipboard contents, or personal paths.
+          required: true

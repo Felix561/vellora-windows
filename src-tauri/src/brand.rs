@@ -1,0 +1,9 @@
+pub const APP_NAME: &str = "Vellora";
+pub const OLD_APP_NAME: &str = "OpenFlow";
+pub const CREDENTIAL_SERVICE: &str = "Vellora";
+pub const OLD_CREDENTIAL_SERVICE: &str = "OpenFlow";
+pub const CREDENTIAL_USERNAME: &str = "openai_api_key";
+pub const DATA_DIR_NAME: &str = "Vellora";
+pub const OLD_DATA_DIR_NAME: &str = "OpenFlow";
+pub const DATABASE_NAME: &str = "vellora.db";
+pub const OLD_DATABASE_NAME: &str = "openflow.db";
