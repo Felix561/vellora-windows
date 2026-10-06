@@ -17,6 +17,10 @@ Hold **Ctrl + Win**, speak, and release. Vellora transcribes the recording throu
 
 ## Why Vellora?
 
+I built Vellora because I wanted a simple, inexpensive dictation app: press a shortcut, speak, and get usable text. OpenAI's transcription models have worked well for my everyday dictation, with API costs of **about five cents a day in my own usage**. That is a personal estimate; your costs depend on how much you dictate, your model choice, optional cleanup, and current API pricing.
+
+Vellora is an easy way to try dictation before deciding whether to pay for a commercial tool such as [Wispr Flow](https://wisprflow.ai/). You bring your own OpenAI API key and pay for your API usage; Vellora itself has no subscription fee. The goal is a focused Windows tool that covers the basics and works well for everyday use.
+
 - **A focused Windows workflow:** hold-to-record or hands-free dictation, a tray app, a click-through status indicator, and startup control in Settings.
 - **Your model choice:** Whisper, GPT-4o mini Transcribe, GPT-4o Transcribe, or GPT-4o Transcribe Diarize. Optional text cleanup is off by default.
 - **Recoverable text:** automatic paste, copying, delayed re-paste, and optional local history with deletion controls.
