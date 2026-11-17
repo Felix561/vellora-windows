@@ -4,10 +4,12 @@ mod assist_chord;
 mod audio;
 mod brand;
 mod clipboard;
+mod clipboard_snapshot;
 mod credentials;
 mod history;
 mod hotkey;
 mod input_activity;
+mod input_lock;
 mod migration;
 mod openai;
 mod pricing;
@@ -1188,6 +1190,8 @@ async fn deliver_transcript(
     if !settings.auto_paste && !settings.copy_to_clipboard {
         return (false, None);
     }
+    // Text Assist uses the clipboard and injected keys too; never interleave the sequences.
+    let _input_guard = input_lock::lock().await;
     let previous = if settings.auto_paste && !settings.copy_to_clipboard {
         match clipboard::capture_text() {
             Ok(previous) => previous,

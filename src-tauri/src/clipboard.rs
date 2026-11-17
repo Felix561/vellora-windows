@@ -2,10 +2,9 @@ use std::{thread, time::Duration};
 
 use anyhow::Context;
 use windows::Win32::System::DataExchange::{CountClipboardFormats, GetClipboardSequenceNumber};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-    VK_CONTROL, VK_V,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, VK_CONTROL, VK_V};
+
+use crate::input_activity::key_input;
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 pub fn copy_text(text: &str) -> anyhow::Result<()> {
@@ -82,23 +81,4 @@ pub fn paste_into(expected_target: Option<isize>) -> anyhow::Result<()> {
         anyhow::bail!("Windows SendInput did not send the full paste shortcut");
     }
     Ok(())
-}
-
-fn key_input(key: VIRTUAL_KEY, key_up: bool) -> INPUT {
-    INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: key,
-                wScan: 0,
-                dwFlags: if key_up {
-                    KEYEVENTF_KEYUP
-                } else {
-                    Default::default()
-                },
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    }
 }
