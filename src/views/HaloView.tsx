@@ -22,8 +22,10 @@ const SPINNER_ARC = 20;
 type HaloStyle = CSSProperties & Record<`--${string}`, string>;
 
 /**
- * Content of the transparent, click-through `assist-halo` window: selection outline,
- * progress ring and label chip for a Text Assist job. It has no interactive controls.
+ * Content of the transparent, click-through, always-on-top `assist-halo` window: a progress
+ * ring and a short label chip at the top-right of the selection (or at the text cursor). No
+ * outline is drawn around the selection (owner decision, November 17, 2026). It has no
+ * interactive controls.
  */
 export function HaloView() {
   const [halo, setHalo] = useState<HaloLayout>(HIDDEN_HALO);
@@ -50,10 +52,7 @@ export function HaloView() {
   const visible = halo.phase !== "hidden";
   const faded = visible && fadeMs !== null && fadedKey === key;
   const ensemble = halo.kind === "ensemble" && halo.colors.length > 1;
-  const style: HaloStyle = {
-    "--halo-color": halo.color,
-    "--halo-gradient": ensemble ? `linear-gradient(90deg, ${halo.colors.join(", ")})` : halo.color,
-  };
+  const style: HaloStyle = { "--halo-color": halo.color };
   const classes = [
     "halo-root",
     `halo-phase-${halo.phase}`,
@@ -66,29 +65,10 @@ export function HaloView() {
       {visible && <span className="halo-sr-only">{halo.label}</span>}
       {visible && (
         <div className="halo-layer" aria-hidden="true">
-          {halo.box && <Outline halo={halo} ensemble={ensemble} />}
           <Badge halo={halo} ensemble={ensemble} />
         </div>
       )}
     </main>
-  );
-}
-
-function Outline({ halo, ensemble }: { halo: HaloLayout; ensemble: boolean }) {
-  const box = halo.box;
-  if (!box) return null;
-  const weight = halo.phase === "hold_cue" || halo.kind === "rewrite" ? "thick" : "thin";
-  const classes = [
-    "halo-outline",
-    ensemble ? "halo-outline-gradient" : `halo-outline-${weight}`,
-    halo.phase === "done" ? "halo-outline-done" : "",
-  ].filter(Boolean).join(" ");
-  return (
-    <div
-      className={classes}
-      data-testid="halo-outline"
-      style={{ left: `${box.x}px`, top: `${box.y}px`, width: `${box.width}px`, height: `${box.height}px` }}
-    />
   );
 }
 

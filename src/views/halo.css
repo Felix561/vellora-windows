@@ -1,5 +1,5 @@
 /* Text Assist halo window (`assist-halo`): transparent, click-through, never focused.
-   Like the dictation overlay, the page itself paints nothing; only the outline, ring and
+   Like the dictation overlay, the page itself paints nothing; only the ring and
    chip are visible. The backend makes the native window transparent and ignores cursor events. */
 html:has(.halo-root),
 html:has(.halo-root) body,
@@ -48,44 +48,6 @@ html:has(.halo-root) #root {
 
 .halo-faded .halo-layer {
   opacity: 0;
-}
-
-/* Selection outline (see .halo in docs/text-assist-ui-concept.html). */
-.halo-outline {
-  position: absolute;
-  box-sizing: border-box;
-  border-radius: 6px;
-  outline: 2px solid var(--halo-color);
-  outline-offset: 3px;
-  box-shadow: 0 0 0 7px color-mix(in srgb, var(--halo-color) 16%, transparent);
-  transition: background-color 400ms ease;
-}
-
-.halo-outline-thick {
-  outline-width: 3px;
-}
-
-/* Ensemble: a gradient ring of the member colors, drawn with a mask so the selection stays visible. */
-.halo-outline-gradient {
-  outline: none;
-  box-shadow: 0 0 0 9px rgba(120, 120, 200, 0.12);
-}
-
-.halo-outline-gradient::before {
-  content: "";
-  position: absolute;
-  inset: -5.5px;
-  padding: 2.5px;
-  border-radius: 9px;
-  background: var(--halo-gradient);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-}
-
-/* Replaced: a soft green tint, translucent so the new text stays readable underneath. */
-.halo-outline-done {
-  background-color: rgba(52, 168, 83, 0.16);
 }
 
 /* Badge: label chip + 30 px ring, ring centered on the anchor point. */
@@ -158,7 +120,6 @@ html:has(.halo-root) #root {
 }
 
 .halo-reduced-motion .halo-layer,
-.halo-reduced-motion .halo-outline,
 .halo-reduced-motion .halo-ring-bar {
   transition: none;
 }
@@ -169,7 +130,6 @@ html:has(.halo-root) #root {
   }
 
   .halo-layer,
-  .halo-outline,
   .halo-ring-bar {
     transition: none;
   }

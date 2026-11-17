@@ -5,7 +5,7 @@ This document replaces the earlier feature brief of the same date. It describes
 local development only. It is not approval to push, publish, release, install an
 update, or change the public/private repository arrangement.
 
-UI concept mockup (synthetic content, not final visuals):
+UI concept mockup (synthetic content, not final visuals; its selection outlines are superseded, see 2.4):
 [text-assist-ui-concept.html](text-assist-ui-concept.html). Open it in a browser.
 
 ## 1. Summary
@@ -32,7 +32,7 @@ not change the Ctrl+Win recording behavior.
 | Rewrite presets | 1 Polish, 2 Clearer, 3 Academic, 4 Professional, 5 Custom. Editable; users can add more. |
 | Ensemble output | Cards only, one per model/effort. No merge or judge step. |
 | Provider architecture | Native API adapters + one OpenAI-compatible adapter + CLI bridges for subscriptions. |
-| Visual design | Colored box around the selection, progress ring + label at its top-right corner, panel/cards next to it. Color = model; outline style = mode. |
+| Visual design | Progress ring + short label at the top-right of the selection (or the text cursor), floating above all windows; panel/cards next to it. Color = model. **No outline around the selection** (owner decision after the first live test, November 17, 2026). |
 | Retiring cleanup model | Fix separately first (M0) before December 11, 2026. |
 
 ### Goals
@@ -58,14 +58,14 @@ not change the Ctrl+Win recording behavior.
 ### 2.1 Quick Polish (tap Shift+Win)
 
 1. The user selects text and taps Shift+Win (both keys released within 350 ms, no other key pressed).
-2. A colored box appears around the selection with a progress ring and a label such as
-   `GPT-6 Luna · polish` at its top-right corner. No Vellora window takes focus.
+2. A progress ring with a short label such as `GPT-6 Luna` appears at the top-right of the
+   selection, floating above all windows. No outline is drawn. No Vellora window takes focus.
 3. The ring fills while the corrected text streams in. Progress is estimated as received
    characters divided by selection length. While a model is still thinking (no text yet),
    the ring spins.
-4. The selection is replaced in place. The ring becomes ✓ and the label shows
-   `✓ 5 fixes · Ctrl+Z undoes`. Both fade after about two seconds.
-5. If nothing needed fixing: `No changes needed`, and nothing is pasted.
+4. The selection is replaced in place. The ring becomes ✓ and the label shows `5 fixes`
+   (the editor's Ctrl+Z undoes). Both fade after about two seconds.
+5. If nothing needed fixing: `No changes`, and nothing is pasted.
 6. Tapping Shift+Win again during a job cancels it. The text stays untouched.
 
 ### 2.2 Rewrite panel (hold Shift+Win)
@@ -106,9 +106,13 @@ not change the Ctrl+Win recording behavior.
 - **Color = model.** Defaults by provider family: OpenAI/ChatGPT teal `#10a37f`,
   Anthropic/Claude clay `#d97757`, Google blue `#4285f4`, local/other gray. Each saved
   model can override its color.
-- **Outline style = mode.** Polish: thin outline + small ring. Rewrite: thicker outline +
-  panel. Ensemble: outline mixing the members' colors + one card per member, and a segmented
-  ring with one segment per member.
+- **No selection outline.** The halo is only the ring and a short label chip in an
+  always-on-top, click-through layer above all windows (changed from the original outline
+  design after the first live test, November 17, 2026). Rewrite: ring + panel. Ensemble:
+  segmented ring with one segment per member + one card per member.
+- **Short labels.** While working: the model name. Results: `5 fixes`, `No changes`,
+  `Review in Vellora`, `Saved in Vellora`, `Select text first`, `Cancelled`. Longer
+  explanations live in History.
 - **Ring states:** filling (streaming), spinning (thinking), ✓ (replaced), `!` (failed; text untouched).
 - The panel and cards use Vellora's Notebook palette and also support the Windows Classic appearance.
 
@@ -248,7 +252,7 @@ reports `IsPassword`, or if no foreground window exists.
 2. The activity counter equals the snapshot value: no real key press, click or wheel since capture.
 3. All guard checks passed (section 5).
 
-If any check fails, the job ends as `Kept`: the label says `Result ready – open Vellora` and the
+If any check fails, the job ends as `Kept`: the label says `Saved in Vellora` and the
 result is in History.
 
 **Rewrite panel / ensemble** (focus left the target):
@@ -348,7 +352,7 @@ input tokens plus a margin.
 5. **Plausible size:** at most 40% of words changed (word-level diff) and length within ±30%.
    This is a safety net against broken output, not a preview mode.
 
-If a check fails, the job ends as `Kept`. The label says `Polish looked wrong – review in Vellora`,
+If a check fails, the job ends as `Kept`. The label says `Review in Vellora`,
 and the panel can open with the diff. The Rewrite panel shows the same checks as warnings but
 does not block Apply, because rewrites change more by design. The protected-token check stays a
 visible warning.

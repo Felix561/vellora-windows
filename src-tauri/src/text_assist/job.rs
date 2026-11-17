@@ -250,26 +250,27 @@ fn finish<T>(run: &Run<'_, T>, target: Option<&T>, done: Finish<'_>) -> JobResul
 /// User-facing text for provider errors. Never includes provider responses.
 pub fn engine_error_label(error: &TextError) -> String {
     match error {
-        TextError::MissingKey => "Add an API key in Vellora first".to_string(),
-        TextError::InvalidKey => "The provider rejected the API key".to_string(),
-        TextError::RateLimited => "Rate limit or quota reached – try later".to_string(),
-        TextError::Network => "No connection to the provider".to_string(),
-        TextError::Timeout => "The model took too long – text untouched".to_string(),
-        TextError::Server(_) => "Provider error – text untouched".to_string(),
-        TextError::Rejected(_) => "The provider rejected the request".to_string(),
-        TextError::BadResponse => "Unexpected provider response".to_string(),
-        TextError::ProviderRefused => "The model refused – text untouched".to_string(),
-        TextError::Unsupported => "This model or effort is not supported".to_string(),
-        TextError::CliNotInstalled => "The CLI is not installed".to_string(),
-        TextError::CliNotSignedIn => "The CLI is not signed in".to_string(),
+        TextError::MissingKey => "Add API key".to_string(),
+        TextError::InvalidKey => "Key rejected".to_string(),
+        TextError::RateLimited => "Rate limited".to_string(),
+        TextError::Network => "Offline".to_string(),
+        TextError::Timeout => "Timed out".to_string(),
+        TextError::Server(_) => "Provider error".to_string(),
+        TextError::Rejected(_) => "Request rejected".to_string(),
+        TextError::BadResponse => "Bad response".to_string(),
+        TextError::ProviderRefused => "Model refused".to_string(),
+        TextError::Unsupported => "Not supported".to_string(),
+        TextError::CliNotInstalled => "CLI not installed".to_string(),
+        TextError::CliNotSignedIn => "CLI signed out".to_string(),
         TextError::Cancelled => "Cancelled".to_string(),
     }
 }
 
+/// Short chip text after a replacement; the ring already shows the check mark.
 fn fixes_label(fixes: usize) -> String {
     match fixes {
-        0 | 1 => "✓ 1 fix · Ctrl+Z undoes".to_string(),
-        n => format!("✓ {n} fixes · Ctrl+Z undoes"),
+        0 | 1 => "1 fix".to_string(),
+        n => format!("{n} fixes"),
     }
 }
 
@@ -296,7 +297,7 @@ pub async fn run_polish<P: JobPlatform>(
         phase: phase.as_ref(),
         started: Instant::now(),
     };
-    let polish_label = format!("{} · polish", job.model_label);
+    let polish_label = job.model_label.clone();
     run.phase.set(Phase::Capturing);
 
     // 1. Target snapshot.
@@ -362,7 +363,7 @@ pub async fn run_polish<P: JobPlatform>(
             Finish {
                 phase: Phase::Cancelled,
                 reason: Some("cancelled"),
-                label: "Cancelled – text untouched".to_string(),
+                label: "Cancelled".to_string(),
                 original: Some(&selection),
                 result: None,
                 target_app: target_app.clone(),
@@ -378,7 +379,7 @@ pub async fn run_polish<P: JobPlatform>(
             Finish {
                 phase: Phase::Failed,
                 reason: Some("empty_selection"),
-                label: "Select some text first".to_string(),
+                label: "Select text first".to_string(),
                 original: None,
                 result: None,
                 target_app,
@@ -456,7 +457,7 @@ pub async fn run_polish<P: JobPlatform>(
             Finish {
                 phase: Phase::NoChange,
                 reason: None,
-                label: "No changes needed".to_string(),
+                label: "No changes".to_string(),
                 original: Some(&selection),
                 result: Some(restored),
                 target_app,
@@ -473,7 +474,7 @@ pub async fn run_polish<P: JobPlatform>(
             Finish {
                 phase: Phase::Kept,
                 reason: report.reason_code(),
-                label: "Polish looked wrong – review in Vellora".to_string(),
+                label: "Review in Vellora".to_string(),
                 original: Some(&selection),
                 result: (!restored.trim().is_empty()).then_some(restored),
                 target_app,
@@ -491,7 +492,7 @@ pub async fn run_polish<P: JobPlatform>(
         Some(&target),
         Phase::Replacing,
         Some(1.0),
-        format!("{} · applying", job.model_label),
+        job.model_label.clone(),
     );
     let replaced = {
         let platform = platform.clone();
@@ -523,7 +524,7 @@ pub async fn run_polish<P: JobPlatform>(
             Finish {
                 phase: Phase::Kept,
                 reason: Some(failure.code),
-                label: "Result ready – open Vellora".to_string(),
+                label: "Saved in Vellora".to_string(),
                 original: Some(&selection),
                 result: Some(restored),
                 target_app,
@@ -705,7 +706,7 @@ mod tests {
             platform.replaced.lock().unwrap().as_slice(),
             ["  I think it's fine.\r\n"]
         );
-        assert!(result.label.starts_with('✓'));
+        assert!(result.label.ends_with("fix") || result.label.ends_with("fixes"));
         let runs = recorder.runs.lock().unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].outcome, OUTCOME_APPLIED);
@@ -787,7 +788,7 @@ mod tests {
         .await;
         assert_eq!(result.phase, Phase::Kept);
         assert_eq!(result.reason_code, Some("user_activity"));
-        assert_eq!(result.label, "Result ready – open Vellora");
+        assert_eq!(result.label, "Saved in Vellora");
         assert_eq!(
             recorder.runs.lock().unwrap()[0].result_text.as_deref(),
             Some("I think it's fine.")

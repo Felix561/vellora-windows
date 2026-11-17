@@ -162,23 +162,20 @@ describe("HaloView", () => {
     await vi.waitFor(() => expect(unlisten).toHaveBeenCalled());
   });
 
-  it("positions the box outline in CSS px from physical px / devicePixelRatio", async () => {
+  it("never draws an outline; the ring sits at the selection's top-right in CSS px", async () => {
     await renderHalo();
     emit(payload());
-    const outline = screen.getByTestId("halo-outline");
-    expect(outline).toHaveStyle({ left: "100px", top: "200px", width: "400px", height: "60px" });
-    expect(outline).toHaveClass("halo-outline-thin");
-    // Ring centered on the box's top-right corner, chip to its left.
+    expect(screen.queryByTestId("halo-outline")).not.toBeInTheDocument();
+    // Ring centered on the selection's top-right corner (physical px / devicePixelRatio), chip to its left.
     expect(screen.getByTestId("halo-badge")).toHaveStyle({ left: "515px", top: "185px" });
     expect(screen.getByTestId("halo-badge")).toHaveClass("halo-badge-left");
     emit(payload({ kind: "rewrite" }));
-    expect(screen.getByTestId("halo-outline")).toHaveClass("halo-outline-thick");
+    expect(screen.queryByTestId("halo-outline")).not.toBeInTheDocument();
   });
 
-  it("draws a thick outline with a spinning ring for the hold cue", async () => {
+  it("shows a spinning ring for the hold cue", async () => {
     await renderHalo();
     emit(payload({ phase: "hold_cue", label: "Rewrite" }));
-    expect(screen.getByTestId("halo-outline")).toHaveClass("halo-outline-thick");
     expect(screen.getByTestId("halo-ring")).toHaveAttribute("data-ring", "spinner");
     expect(screen.getByTestId("halo-chip")).toHaveTextContent("Rewrite");
   });
@@ -193,19 +190,19 @@ describe("HaloView", () => {
     expect(Number(screen.getByTestId("halo-ring-bar").getAttribute("stroke-dashoffset"))).toBe(0);
   });
 
-  it("shows ✓ with a tinted box when done and fades out after about two seconds", async () => {
+  it("shows ✓ when done and fades out after about two seconds", async () => {
     await renderHalo();
     vi.useFakeTimers();
-    emit(payload({ phase: "done", label: "✓ 5 fixes · Ctrl+Z undoes" }));
+    emit(payload({ phase: "done", label: "5 fixes" }));
     expect(screen.getByTestId("halo-ring-glyph")).toHaveTextContent("✓");
-    expect(screen.getByTestId("halo-outline")).toHaveClass("halo-outline-done");
-    expect(screen.getByRole("status")).toHaveTextContent("✓ 5 fixes · Ctrl+Z undoes");
+    expect(screen.queryByTestId("halo-outline")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("5 fixes");
     expect(screen.getByRole("status")).not.toHaveClass("halo-faded");
     act(() => vi.advanceTimersByTime(2000));
     expect(screen.getByRole("status")).toHaveClass("halo-faded");
   });
 
-  it("shows ! and the label when failed, without a done tint, and stays until hidden", async () => {
+  it("shows ! and the label when failed and stays until hidden", async () => {
     await renderHalo();
     vi.useFakeTimers();
     emit(payload({ phase: "failed", label: "Select some text first" }));
@@ -213,7 +210,6 @@ describe("HaloView", () => {
     expect(screen.getByTestId("halo-chip")).toHaveTextContent("Select some text first");
     expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
     expect(screen.getByRole("status")).toHaveTextContent("Select some text first");
-    expect(screen.getByTestId("halo-outline")).not.toHaveClass("halo-outline-done");
     act(() => vi.advanceTimersByTime(10_000));
     expect(screen.getByRole("status")).not.toHaveClass("halo-faded");
   });
@@ -227,14 +223,13 @@ describe("HaloView", () => {
     expect(badge).toHaveStyle({ left: "185px", top: "285px" });
   });
 
-  it("draws one ring segment per ensemble member and a gradient outline", async () => {
+  it("draws one ring segment per ensemble member", async () => {
     await renderHalo();
     emit(payload({ kind: "ensemble", colors: ["#10a37f", "#d97757", "#4285f4"], label: "Ensemble · 2 / 3", progress: 0.6, phase: "streaming" }));
     const segments = screen.getByTestId("halo-segments").querySelectorAll("circle");
     expect(segments).toHaveLength(3);
     expect(Array.from(segments).map((s) => s.getAttribute("stroke"))).toEqual(["#10a37f", "#d97757", "#4285f4"]);
-    expect(screen.getByTestId("halo-outline")).toHaveClass("halo-outline-gradient");
-    expect(screen.getByRole("status").style.getPropertyValue("--halo-gradient")).toBe("linear-gradient(90deg, #10a37f, #d97757, #4285f4)");
+    expect(screen.queryByTestId("halo-outline")).not.toBeInTheDocument();
   });
 
   it("marks the root for reduced motion", async () => {

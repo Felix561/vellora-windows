@@ -71,19 +71,13 @@ fn exe_name(pid: u32) -> Option<String> {
 /// Pure checks applied to a fresh snapshot (unit-tested).
 pub(crate) fn refuse_target(hwnd: isize, pid: u32, focus: &FocusInfo) -> Option<Failure> {
     if hwnd == 0 || pid == 0 {
-        return Some(Failure::new("no_target", "Click into a text field first"));
+        return Some(Failure::new("no_target", "Click into text"));
     }
     if pid == std::process::id() {
-        return Some(Failure::new(
-            "vellora_window",
-            "Select text in another app, not in Vellora",
-        ));
+        return Some(Failure::new("vellora_window", "Not in Vellora"));
     }
     if focus.is_password == Some(true) {
-        return Some(Failure::new(
-            "password_field",
-            "Password fields are not supported",
-        ));
+        return Some(Failure::new("password_field", "Password field"));
     }
     None
 }
@@ -96,30 +90,24 @@ pub(crate) fn check_copied(
 ) -> Result<String, Failure> {
     match vscode {
         VsCodeCopy::EmptySelection => {
-            return Err(Failure::new(
-                "vscode_empty_selection",
-                "Select some text first (VS Code copied a whole line)",
-            ))
+            return Err(Failure::new("vscode_empty_selection", "Select text first"))
         }
         VsCodeCopy::MultiCursor => {
-            return Err(Failure::new(
-                "vscode_multicursor",
-                "Multiple cursors are not supported",
-            ))
+            return Err(Failure::new("vscode_multicursor", "One cursor only"))
         }
         VsCodeCopy::Unknown | VsCodeCopy::Selection => {}
     }
     let Some(text) = text else {
-        return Err(Failure::new("no_text", "The selection has no plain text"));
+        return Err(Failure::new("no_text", "No plain text"));
     };
     if text.trim().is_empty() {
-        return Err(Failure::new("empty_selection", "Select some text first"));
+        return Err(Failure::new("empty_selection", "Select text first"));
     }
     let count = text.chars().count();
     if count > max_chars {
         return Err(Failure::new(
             "too_long",
-            format!("Selection too long ({count} characters, limit {max_chars})"),
+            format!("Too long (max {max_chars})"),
         ));
     }
     Ok(text)
@@ -175,38 +163,26 @@ impl JobPlatform for WindowsPlatform {
 
     fn capture(&self, target: &TargetSnapshot, max_chars: usize) -> Result<String, Failure> {
         if !clip::wait_modifiers_released(MODIFIER_RELEASE_TIMEOUT) {
-            return Err(Failure::new(
-                "modifiers_held",
-                "Release Shift and Win, then try again",
-            ));
+            return Err(Failure::new("modifiers_held", "Release keys"));
         }
         let _input = input_lock::blocking_lock();
         if foreground().0 != target.hwnd {
-            return Err(Failure::new("target_changed", "The window changed"));
+            return Err(Failure::new("target_changed", "Window changed"));
         }
         let saved = clip::ClipboardSnapshot::capture()
-            .map_err(|_| Failure::new("clipboard_busy", "The clipboard is busy – try again"))?;
+            .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
         let before = clip::sequence();
-        clip::send_copy().map_err(|_| {
-            Failure::new(
-                "input_blocked",
-                "Windows blocked the copy shortcut (elevated app?)",
-            )
-        })?;
+        clip::send_copy().map_err(|_| Failure::new("input_blocked", "Copy blocked"))?;
         let Some(settled) = clip::wait_for_copy(before, CopyWait::default()) else {
             // Nothing was copied, so the clipboard is untouched.
-            return Err(Failure::new(
-                "no_selection",
-                "Select some text first (or this app blocks copying)",
-            ));
+            return Err(Failure::new("no_selection", "Select text first"));
         };
         let copied = clip::read_copied_selection();
         // Restore only if nobody changed the clipboard after the injected copy.
         if clip::sequence() == settled {
             let _ = saved.restore();
         }
-        let copied = copied
-            .map_err(|_| Failure::new("clipboard_busy", "The clipboard is busy – try again"))?;
+        let copied = copied.map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
         check_copied(copied.text, copied.vscode, max_chars)
     }
 

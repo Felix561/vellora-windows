@@ -121,6 +121,11 @@ impl Halo {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(window) = self.app.get_webview_window(HALO_WINDOW) {
             let mut last = self.last_window.lock().unwrap();
+            if last.is_none() {
+                // First update of a job: lift the halo above every window, including other
+                // always-on-top windows that appeared since (without activating it).
+                let _ = window.set_always_on_top(true);
+            }
             if *last != Some(layout.window) {
                 // Moving/resizing never activates the window; it stays shown and click-through.
                 let _ =
@@ -416,7 +421,7 @@ impl Runtime {
                     kind: "rewrite",
                     mode: layout.mode,
                     color,
-                    label: "Rewrite…".to_string(),
+                    label: "Rewrite".to_string(),
                     progress: None,
                     box_rect: layout.box_rect,
                     point: layout.point,
@@ -430,11 +435,7 @@ impl Runtime {
     fn on_hold(&self) {
         // The Rewrite panel arrives in M4; until then explain instead of doing nothing.
         self.halo.hide_now();
-        self.show_info(
-            Phase::Kept,
-            "Rewrite panel coming soon – tap Shift+Win to polish",
-            "#8a8f98",
-        );
+        self.show_info(Phase::Kept, "Panel coming soon", "#8a8f98");
     }
 
     fn on_tap(&self) {
@@ -456,10 +457,8 @@ impl Runtime {
             Ok(choice) => choice,
             Err(error) => {
                 let label = match error {
-                    TextError::MissingKey => "Add your OpenAI API key in Vellora first".to_string(),
-                    TextError::Unsupported => {
-                        "This provider is not available yet – choose an OpenAI model".to_string()
-                    }
+                    TextError::MissingKey => "Add API key".to_string(),
+                    TextError::Unsupported => "Model not available".to_string(),
                     other => job::engine_error_label(&other),
                 };
                 self.show_info(Phase::Failed, &label, "#8a8f98");
