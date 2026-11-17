@@ -17,6 +17,16 @@
 //! - Model pages: <https://aistudio.google.com/docs/models/gemini-3.1-flash-lite.md>,
 //!   `.../gemini-3.6-flash.md`, `.../gemini-3.8-flash.md` (all stable)
 //!
+//! CLI bridge facts (M6) were checked on 2026-11-17 on this machine without a model request:
+//! - Codex: `codex debug models --bundled` (the catalog shipped with codex-cli 0.169.0) lists
+//!   `gpt-6-luna` (low..max, default medium), `gpt-6.1-sol` and `gpt-6-astra` (low..max plus
+//!   `ultra`, default low). `ultra` has no Vellora effort and is not offered. The models a
+//!   ChatGPT account may use depend on its plan.
+//! - Claude Code 2.1.325: `--model` takes the aliases `haiku`, `sonnet`, `opus`; `--effort`
+//!   takes low..max ("available levels depend on the model"). No default is sent, so the CLI
+//!   applies its own.
+//! - CLI runs are billed to the plan (`ProviderKind::billing`), so their price is 0.
+//!
 //! Prices are standard text rates in USD per 1M tokens. Cached-input discounts are not
 //! modeled, so estimates are an upper bound. No page listed a shutdown date.
 
@@ -86,6 +96,12 @@ const LOW_TO_MAX: &[Effort] = &[
     Effort::Xhigh,
     Effort::Max,
 ];
+
+/// Codex CLI `model_reasoning_effort` low..max (as listed by the bundled Codex catalog).
+const CODEX_LOW_TO_MAX: &[Effort] = LOW_TO_MAX;
+
+/// Claude Code CLI `--effort` values.
+const CLAUDE_CLI_EFFORTS: &[Effort] = LOW_TO_MAX;
 
 /// Gemini `thinkingLevel` `minimal`, `low`, `medium`, `high`.
 const MINIMAL_TO_HIGH: &[Effort] = &[Effort::Minimal, Effort::Low, Effort::Medium, Effort::High];
@@ -264,6 +280,92 @@ static MODELS: &[CatalogModel] = &[
         thinking_off: None,
         price_change: Some(GEMINI_FLASH_2027),
     },
+    // ChatGPT plan through the user's Codex CLI (M6). Plan billing: no marginal price.
+    CatalogModel {
+        provider: ProviderKind::CodexCli,
+        id: "gpt-6-luna",
+        label: "GPT-6 Luna (ChatGPT plan)",
+        efforts: CODEX_LOW_TO_MAX,
+        default_effort: Some(Effort::Medium),
+        input_usd_per_million: 0.0,
+        output_usd_per_million: 0.0,
+        color: "#3cb98f",
+        shutdown: None,
+        quick_candidate: false,
+        thinking_off: None,
+        price_change: None,
+    },
+    CatalogModel {
+        provider: ProviderKind::CodexCli,
+        id: "gpt-6.1-sol",
+        label: "GPT-6.1 Sol (ChatGPT plan)",
+        efforts: CODEX_LOW_TO_MAX,
+        default_effort: Some(Effort::Low),
+        input_usd_per_million: 0.0,
+        output_usd_per_million: 0.0,
+        color: "#0e8f6e",
+        shutdown: None,
+        quick_candidate: false,
+        thinking_off: None,
+        price_change: None,
+    },
+    CatalogModel {
+        provider: ProviderKind::CodexCli,
+        id: "gpt-6-astra",
+        label: "GPT-6 Astra (ChatGPT plan)",
+        efforts: CODEX_LOW_TO_MAX,
+        default_effort: Some(Effort::Low),
+        input_usd_per_million: 0.0,
+        output_usd_per_million: 0.0,
+        color: "#086b52",
+        shutdown: None,
+        quick_candidate: false,
+        thinking_off: None,
+        price_change: None,
+    },
+    // Claude plan through the user's Claude Code CLI (M6). Aliases follow the newest model.
+    CatalogModel {
+        provider: ProviderKind::ClaudeCli,
+        id: "haiku",
+        label: "Claude Haiku (Claude plan)",
+        efforts: CLAUDE_CLI_EFFORTS,
+        default_effort: None,
+        input_usd_per_million: 0.0,
+        output_usd_per_million: 0.0,
+        color: "#f0b597",
+        shutdown: None,
+        quick_candidate: false,
+        thinking_off: None,
+        price_change: None,
+    },
+    CatalogModel {
+        provider: ProviderKind::ClaudeCli,
+        id: "sonnet",
+        label: "Claude Sonnet (Claude plan)",
+        efforts: CLAUDE_CLI_EFFORTS,
+        default_effort: None,
+        input_usd_per_million: 0.0,
+        output_usd_per_million: 0.0,
+        color: "#e08a68",
+        shutdown: None,
+        quick_candidate: false,
+        thinking_off: None,
+        price_change: None,
+    },
+    CatalogModel {
+        provider: ProviderKind::ClaudeCli,
+        id: "opus",
+        label: "Claude Opus (Claude plan)",
+        efforts: CLAUDE_CLI_EFFORTS,
+        default_effort: None,
+        input_usd_per_million: 0.0,
+        output_usd_per_million: 0.0,
+        color: "#a34d33",
+        shutdown: None,
+        quick_candidate: false,
+        thinking_off: None,
+        price_change: None,
+    },
     // Developer-only offline transform (M2). No network request, no cost.
     CatalogModel {
         provider: ProviderKind::Offline,
@@ -324,6 +426,8 @@ pub fn effort_parameter(entry: &CatalogModel, effort: Effort) -> Option<String> 
             (effort, _) => format!("output_config.effort={}", effort.as_str()),
         },
         ProviderKind::Gemini => format!("thinkingConfig.thinkingLevel={}", effort.as_str()),
+        ProviderKind::CodexCli => format!("model_reasoning_effort={}", effort.as_str()),
+        ProviderKind::ClaudeCli => format!("--effort {}", effort.as_str()),
         _ => return None,
     })
 }
@@ -613,6 +717,53 @@ mod tests {
         assert_eq!(
             param(ProviderKind::Gemini, "gemini-3.8-flash", Effort::Minimal),
             None
+        );
+    }
+
+    #[test]
+    fn cli_bridge_entries_are_plan_billed() {
+        use crate::text_providers::Billing;
+        for (provider, ids) in [
+            (
+                ProviderKind::CodexCli,
+                &["gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"][..],
+            ),
+            (ProviderKind::ClaudeCli, &["haiku", "sonnet", "opus"][..]),
+        ] {
+            for id in ids {
+                let entry = find(provider, id).unwrap();
+                assert_eq!(
+                    (entry.input_usd_per_million, entry.output_usd_per_million),
+                    (0.0, 0.0)
+                );
+                assert!(!entry.quick_candidate);
+                assert!(!entry.efforts.contains(&Effort::None));
+                assert!(!entry.efforts.contains(&Effort::Minimal));
+            }
+            assert_ne!(provider.billing(), Billing::Api);
+        }
+        let usage = TokenUsage {
+            input_tokens: 1_000,
+            output_tokens: 1_000,
+            reasoning_tokens: 0,
+        };
+        let haiku = ModelRef::new(ProviderKind::ClaudeCli, "haiku", None);
+        assert_eq!(estimate_cost_usd(&haiku, &usage), Some(0.0));
+        assert_eq!(resolve_effort(&haiku), Ok(None));
+        let luna = ModelRef::new(ProviderKind::CodexCli, "gpt-6-luna", None);
+        assert_eq!(resolve_effort(&luna), Ok(Some(Effort::Medium)));
+        assert_eq!(
+            effort_parameter(
+                find(ProviderKind::CodexCli, "gpt-6-luna").unwrap(),
+                Effort::Low
+            )
+            .as_deref(),
+            Some("model_reasoning_effort=low")
+        );
+        assert_eq!(
+            effort_parameter(find(ProviderKind::ClaudeCli, "opus").unwrap(), Effort::Max)
+                .as_deref(),
+            Some("--effort max")
         );
     }
 

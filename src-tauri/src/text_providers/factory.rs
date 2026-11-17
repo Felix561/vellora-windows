@@ -4,6 +4,9 @@
 //! rebuilt only when its key or endpoint URL changes, so pooled HTTP connections are reused
 //! across jobs. Keys are compared through an in-memory fingerprint keyed with a per-process
 //! random seed; the fingerprint is never stored or logged.
+//!
+//! CLI bridges (M6) are not cached: their engines only hold the settings path, and each run
+//! starts its own CLI process. They are never warmed up.
 
 use std::{
     collections::HashMap,
@@ -12,13 +15,13 @@ use std::{
 };
 
 use super::{
-    anthropic::AnthropicEngine, gemini::GeminiEngine, offline::UppercaseEngine,
-    openai::OpenAiEngine, openai_compat::OpenAiCompatEngine, ModelRef, ProviderKind, TextEngine,
-    TextError,
+    anthropic::AnthropicEngine, cli_claude::ClaudeCliEngine, cli_codex::CodexCliEngine,
+    gemini::GeminiEngine, offline::UppercaseEngine, openai::OpenAiEngine,
+    openai_compat::OpenAiCompatEngine, ModelRef, ProviderKind, TextEngine, TextError,
 };
 use crate::{
     credentials::{self, ProviderKey},
-    types::CompatEndpoint,
+    types::{CliBridge, CliBridges, CompatEndpoint},
 };
 
 /// Where keys come from. Production reads Windows Credential Manager; tests use a map.
@@ -144,6 +147,7 @@ impl EngineFactory {
     ///
     /// Errors: `MissingKey` (no key saved, or it could not be read), `Unsupported` (CLI
     /// providers, unknown or invalid compatible endpoint), `Network` (HTTP client creation).
+    /// Use [`EngineFactory::engine_with_cli`] to also serve the CLI bridges.
     pub fn engine_for(
         &self,
         model: &ModelRef,
@@ -153,6 +157,29 @@ impl EngineFactory {
             return Ok(Arc::new(UppercaseEngine::default()));
         }
         Ok(self.cached(model, compat)?.as_dyn())
+    }
+
+    /// Like [`EngineFactory::engine_for`], and also builds the CLI bridges (`CodexCli`,
+    /// `ClaudeCli`) from `textAssist.cli`. A disabled bridge is `Unsupported`; a missing CLI is
+    /// reported by the run as `CliNotInstalled` (the CLI is located on every run, so a fresh
+    /// install or a changed path applies without a restart).
+    pub fn engine_with_cli(
+        &self,
+        model: &ModelRef,
+        compat: &[CompatEndpoint],
+        cli: &CliBridges,
+    ) -> Result<Arc<dyn TextEngine>, TextError> {
+        match model.provider {
+            ProviderKind::CodexCli => {
+                let path = enabled_path(&cli.codex)?;
+                Ok(Arc::new(CodexCliEngine::new(path)))
+            }
+            ProviderKind::ClaudeCli => {
+                let path = enabled_path(&cli.claude)?;
+                Ok(Arc::new(ClaudeCliEngine::new(path)))
+            }
+            _ => self.engine_for(model, compat),
+        }
     }
 
     /// Pre-connects to the provider for `model` in the background so the next request skips
@@ -228,6 +255,19 @@ impl EngineFactory {
     fn cached_count(&self) -> usize {
         self.cache.lock().unwrap().len()
     }
+}
+
+/// The settings path of an enabled bridge (`None`: search `PATH`).
+fn enabled_path(bridge: &CliBridge) -> Result<Option<String>, TextError> {
+    if !bridge.enabled {
+        return Err(TextError::Unsupported);
+    }
+    Ok(bridge
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string))
 }
 
 /// Production engines with the default provider URLs.
@@ -678,6 +718,78 @@ mod tests {
                 Some(TextError::Unsupported)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn cli_bridges_follow_their_settings() {
+        use crate::text_providers::{cli_common::fake::FakeCli, Effort as E, TextRequest};
+        let cli_request = |model: ModelRef| TextRequest {
+            model,
+            instructions: "Fix grammar.".to_string(),
+            input: "text".to_string(),
+            max_output_tokens: 256,
+            timeout: std::time::Duration::from_secs(30),
+        };
+        let factory = factory(Arc::default(), Arc::default());
+        let codex = ModelRef::new(ProviderKind::CodexCli, "gpt-6-luna", Some(E::Low));
+        let claude = ModelRef::new(ProviderKind::ClaudeCli, "haiku", None);
+        let disabled = CliBridges::default();
+        for model in [&codex, &claude] {
+            assert_eq!(
+                factory.engine_with_cli(model, &[], &disabled).err(),
+                Some(TextError::Unsupported)
+            );
+        }
+
+        let fake = FakeCli::printing(
+            concat!(
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}"#,
+                "
+",
+                r#"{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}"#,
+                "
+",
+            ),
+            0,
+        );
+        let mut bridges = CliBridges {
+            codex: CliBridge {
+                enabled: true,
+                path: Some(fake.path_string()),
+            },
+            ..CliBridges::default()
+        };
+        let engine = factory.engine_with_cli(&codex, &[], &bridges).unwrap();
+        let (result, _) =
+            test_fixture::run_engine(engine.as_ref(), cli_request(codex.clone())).await;
+        assert_eq!(result.unwrap().text, "ok");
+        assert!(fake.recorded("args.txt").contains("--model gpt-6-luna"));
+
+        // A wrong explicit path never falls back to PATH.
+        bridges.claude = CliBridge {
+            enabled: true,
+            path: Some(r"C:\nowhere\claude.exe".to_string()),
+        };
+        let engine = factory.engine_with_cli(&claude, &[], &bridges).unwrap();
+        let (result, _) =
+            test_fixture::run_engine(engine.as_ref(), cli_request(claude.clone())).await;
+        assert_eq!(result.unwrap_err(), TextError::CliNotInstalled);
+
+        // Other providers still go through the cached path; CLI engines are never cached.
+        assert_eq!(
+            factory
+                .engine_with_cli(
+                    &ModelRef::new(ProviderKind::Anthropic, "claude-haiku-5-5", None),
+                    &[],
+                    &bridges
+                )
+                .err(),
+            Some(TextError::MissingKey)
+        );
+        assert_eq!(factory.cached_count(), 0);
+        // Warm-up skips CLI providers.
+        factory.warm_up_now(&codex, &[]).await;
+        assert_eq!(factory.cached_count(), 0);
     }
 
     #[test]

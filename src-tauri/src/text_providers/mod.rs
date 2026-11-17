@@ -9,6 +9,9 @@
 
 pub mod anthropic;
 pub mod catalog;
+pub mod cli_claude;
+pub mod cli_codex;
+pub mod cli_common;
 pub mod factory;
 pub mod gemini;
 pub mod http;
