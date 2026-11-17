@@ -15,10 +15,10 @@ UI concept mockup (synthetic content, not final visuals; its selection outlines 
 | M0 cleanup model | `gpt-6-luna`, effort `none`, settings migration, per-model pricing | Consented live comparison; automated tests |
 | M1 spike | Throwaway probe (not in the repo) | Findings table under section 10 |
 | M2/M3 Quick Polish | Chord machine, activity counter, input lock, clipboard snapshot, capture/verify/replace, guard, OpenAI streaming, halo window, history, settings, dashboard | Live end-to-end in Notepad, VS Code, TeXstudio (apply, undo, no change, cancel, activity -> kept, VS Code empty selection); consented benchmark (9.4) |
-| M4 Rewrite panel | Panel window, presets, another take, diff, model switch, focus hand-back + re-copy apply | Automated tests; live check pending |
+| M4 Rewrite panel | Panel window, presets, another take, diff, model switch, focus hand-back + re-copy apply | Automated tests; live in Notepad on November 17 (hold opens the panel with focus, Polish and Academic presets, Enter applies and returns focus, Esc leaves the text untouched) |
 | M5 providers | Anthropic, Gemini, OpenAI-compatible engines, engine factory, per-provider keys, Text models UI | Loopback fixture tests; no live provider call yet |
-| M6 subscription bridges | Codex CLI (exec) and Claude Code (`claude -p`) in a Job Object, status probe, settings UI | Fake-CLI tests; status probe on this PC; no live model run yet (needs consent, uses plan limits) |
-| M7 ensemble | Profiles, cost preview and limit, parallel members, cards, apply a card | Automated tests; live check pending |
+| M6 subscription bridges | Codex CLI (exec) and Claude Code (`claude -p`) in a Job Object, status probe, settings UI | Fake-CLI tests; status probe on this PC; consented live run on November 17 (`live_bridge_polish`: Codex `gpt-6-luna` low 4.3 s, Claude Code `haiku` 8.2 s, both correct) and as ensemble members |
+| M7 ensemble | Profiles, cost preview and limit, parallel members, cards, apply a card | Automated tests; live in Notepad on November 17 with OpenAI + Codex CLI + Claude Code members (2.0 s / 6.5 s / 10.8 s), applying the Claude card |
 
 Changes from the original design: no selection outline (ring + short label only, owner decision);
 Quick Polish default `gpt-5.6-luna` (benchmark); Codex bridge uses `codex exec` only (app-server is
