@@ -11,6 +11,8 @@ mod openai;
 mod pricing;
 mod settings;
 mod support;
+mod text_assist;
+mod text_providers;
 mod types;
 mod windows_integration;
 
