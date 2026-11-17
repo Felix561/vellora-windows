@@ -1286,6 +1286,61 @@ mod tests {
         }
     }
 
+    /// One synthetic proofreading request through each signed-in CLI. Uses the owner's plan
+    /// limits, so it runs only with `VELLORA_LIVE_CLI_CALLS=1` and the owner's consent.
+    #[tokio::test]
+    #[ignore = "uses the owner's ChatGPT/Claude plan limits; run only with consent"]
+    async fn live_bridge_polish() {
+        use crate::text_assist::prompts;
+        use crate::text_providers::{
+            cli_claude::ClaudeCliEngine, cli_codex::CodexCliEngine, CancelToken, Effort, ModelRef,
+            TextEngine, TextRequest,
+        };
+        assert_eq!(
+            std::env::var("VELLORA_LIVE_CLI_CALLS").as_deref(),
+            Ok("1"),
+            "set VELLORA_LIVE_CLI_CALLS=1 to confirm plan usage"
+        );
+        let input = "i think its fine, lets meet tomorow and discuss the the results.";
+        let runs: [(Box<dyn TextEngine>, ModelRef); 2] = [
+            (
+                Box::new(CodexCliEngine::new(None)),
+                ModelRef::new(ProviderKind::CodexCli, "gpt-6-luna", Some(Effort::Low)),
+            ),
+            (
+                Box::new(ClaudeCliEngine::new(None)),
+                ModelRef::new(ProviderKind::ClaudeCli, "haiku", None),
+            ),
+        ];
+        for (engine, model) in runs {
+            let label = format!("{:?}/{}", model.provider, model.model);
+            let request = TextRequest {
+                model,
+                instructions: prompts::POLISH_INSTRUCTIONS.to_string(),
+                input: input.to_string(),
+                max_output_tokens: prompts::max_output_tokens(input),
+                timeout: CLI_TIMEOUT,
+            };
+            let deltas = std::sync::Mutex::new(0usize);
+            let on_delta = |_: &str| *deltas.lock().unwrap() += 1;
+            let started = Instant::now();
+            let outcome = engine.stream(request, CancelToken::new(), &on_delta).await;
+            let elapsed = started.elapsed();
+            match outcome {
+                Ok(outcome) => println!(
+                    "{label}: {:?} in {elapsed:?}, first token {:?} ms, {} deltas, finish {:?}, usage {:?}\n  -> {}",
+                    outcome.text.len(),
+                    outcome.first_token_ms,
+                    deltas.lock().unwrap(),
+                    outcome.finish,
+                    outcome.usage,
+                    outcome.text
+                ),
+                Err(err) => println!("{label}: ERROR {} in {elapsed:?}", err.reason_code()),
+            }
+        }
+    }
+
     #[test]
     fn parses_versions() {
         assert_eq!(
