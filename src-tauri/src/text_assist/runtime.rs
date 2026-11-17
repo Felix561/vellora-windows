@@ -288,6 +288,17 @@ pub(crate) struct Runtime {
 /// Minimum spacing between connection warm-ups.
 const WARM_UP_INTERVAL: Duration = Duration::from_secs(20);
 
+/// Subscription CLIs start a whole agent process, so they get the CLI budget (spec 3.4: 120 s)
+/// instead of the API budget of the calling mode.
+pub(crate) fn request_timeout(model: &ModelRef, api_timeout: Duration) -> Duration {
+    match model.provider {
+        ProviderKind::CodexCli | ProviderKind::ClaudeCli => {
+            crate::text_providers::cli_common::CLI_TIMEOUT
+        }
+        _ => api_timeout,
+    }
+}
+
 static RUNTIME: std::sync::OnceLock<Arc<Runtime>> = std::sync::OnceLock::new();
 
 /// The running Text Assist runtime, once started.
@@ -301,8 +312,11 @@ impl Runtime {
     pub(crate) fn engine_for(&self, model: &ModelRef) -> Result<Arc<dyn TextEngine>, TextError> {
         catalog::resolve_effort(model)?;
         let settings = (self.settings)();
-        self.factory
-            .engine_for(model, &settings.text_assist.openai_compatible)
+        self.factory.engine_with_cli(
+            model,
+            &settings.text_assist.openai_compatible,
+            &settings.text_assist.cli,
+        )
     }
 
     /// Shows a final status (ring + short label) at `anchor`, or at the pointer.
@@ -472,13 +486,14 @@ impl Runtime {
         });
         drop(active);
         let limits = &settings.text_assist.limits;
+        let polish_model = choice.model.clone();
         let polish = PolishJob {
             id: uuid::Uuid::new_v4().to_string(),
             model: choice.model,
             model_label: choice.label,
             max_chars: limits.quick_max_chars,
             restore_delay: Duration::from_millis(limits.paste_restore_delay_ms),
-            timeout: job::QUICK_POLISH_TIMEOUT,
+            timeout: request_timeout(&polish_model, job::QUICK_POLISH_TIMEOUT),
         };
         let observer = Arc::new(Presenter {
             halo: self.halo.clone(),

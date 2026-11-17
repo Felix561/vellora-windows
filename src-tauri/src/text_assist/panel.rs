@@ -564,7 +564,7 @@ async fn run_request(rt: Arc<Runtime>, job: PanelJob, cancel: CancelToken) {
         instructions: prompts::instructions_for(&job.preset_id, &job.instruction),
         input: job.prepared.core.clone(),
         max_output_tokens: prompts::max_output_tokens(&job.prepared.core),
-        timeout: PANEL_TIMEOUT,
+        timeout: runtime::request_timeout(&job.model, PANEL_TIMEOUT),
     };
     let outcome = engine.stream(request, cancel, &on_delta).await;
     let duration_ms = Some(started.elapsed().as_millis() as u64);
@@ -1140,6 +1140,17 @@ mod tests {
         );
         let (_, _, blocked) = ensemble_cost(&[opus.clone(), opus], 300, 30_000, 0.05);
         assert!(blocked);
+    }
+
+    #[test]
+    fn subscription_clis_get_the_cli_budget() {
+        let cli = ModelRef::new(ProviderKind::ClaudeCli, "haiku", None);
+        let api = ModelRef::new(ProviderKind::Openai, "gpt-6-luna", None);
+        assert_eq!(
+            runtime::request_timeout(&cli, PANEL_TIMEOUT),
+            crate::text_providers::cli_common::CLI_TIMEOUT
+        );
+        assert_eq!(runtime::request_timeout(&api, PANEL_TIMEOUT), PANEL_TIMEOUT);
     }
 
     #[test]

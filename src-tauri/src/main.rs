@@ -497,6 +497,7 @@ fn main() {
             text_assist::commands::get_text_provider_keys,
             text_assist::commands::save_text_provider_key,
             text_assist::commands::delete_text_provider_key,
+            text_assist::commands::get_text_cli_status,
             text_assist::panel::get_panel_init,
             text_assist::panel::panel_run,
             text_assist::panel::panel_apply,

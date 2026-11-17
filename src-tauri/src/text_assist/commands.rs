@@ -170,6 +170,29 @@ pub fn delete_text_provider_key(
     credentials::delete_provider_key(&provider).map_err(to_string)
 }
 
+/// Installed/version/signed-in status of the subscription CLIs (no model request is made).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextCliStatus {
+    pub codex: crate::text_providers::cli_common::CliStatus,
+    pub claude: crate::text_providers::cli_common::CliStatus,
+}
+
+#[tauri::command]
+pub async fn get_text_cli_status(window: tauri::WebviewWindow) -> Result<TextCliStatus, String> {
+    use crate::text_providers::cli_common::{cli_status, CliKind};
+    crate::require_main_window(&window)?;
+    let settings = super::runtime::current()
+        .map(|runtime| (runtime.settings)())
+        .unwrap_or_default();
+    let cli = settings.text_assist.cli;
+    let (codex, claude) = tokio::join!(
+        cli_status(CliKind::Codex, cli.codex.path.as_deref()),
+        cli_status(CliKind::Claude, cli.claude.path.as_deref())
+    );
+    Ok(TextCliStatus { codex, claude })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
