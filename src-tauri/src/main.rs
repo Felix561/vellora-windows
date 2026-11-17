@@ -502,6 +502,8 @@ fn main() {
             text_assist::panel::panel_apply,
             text_assist::panel::panel_copy,
             text_assist::panel::panel_close,
+            text_assist::panel::panel_ensemble_preview,
+            text_assist::panel::panel_run_ensemble,
             get_settings,
             save_settings,
             has_openai_api_key,

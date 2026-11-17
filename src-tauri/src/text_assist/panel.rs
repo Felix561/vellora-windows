@@ -22,9 +22,13 @@ use super::{
 };
 use crate::{
     clipboard, clipboard_snapshot,
-    history::{self, TextAssistRun, KIND_REWRITE, OUTCOME_APPLIED, OUTCOME_FAILED, OUTCOME_KEPT},
+    history::{
+        self, TextAssistRun, KIND_ENSEMBLE, KIND_REWRITE, OUTCOME_APPLIED, OUTCOME_FAILED,
+        OUTCOME_KEPT,
+    },
     text_providers::{
-        catalog, CancelToken, FinishReason, ModelRef, ProviderKind, TextError, TextRequest,
+        catalog, Billing, CancelToken, Effort, FinishReason, ModelRef, ProviderKind, TextError,
+        TextRequest,
     },
     types::{AppSettings, Appearance},
 };
@@ -71,6 +75,31 @@ pub struct PanelInit {
     pub active_model_index: usize,
     pub custom_instructions: Vec<String>,
     pub max_chars: usize,
+    /// Ensemble profiles (M7). When none are configured, one implicit "Favorites" profile.
+    pub ensemble_profiles: Vec<PanelEnsembleProfile>,
+    pub ensemble_max_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanelEnsembleProfile {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<PanelModel>,
+}
+
+/// Shown before an ensemble run: members, providers and the estimated API cost (spec 2.3).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnsemblePreview {
+    pub profile_id: String,
+    pub members: Vec<PanelModel>,
+    pub providers: Vec<String>,
+    pub estimated_usd: f64,
+    /// True when a paid member has no catalog price (the estimate excludes it).
+    pub unknown_cost: bool,
+    pub limit_usd: f64,
+    pub blocked: bool,
 }
 
 /// One request's state; mirrors `PanelResult` in `src/lib/assistPanel.ts`.
@@ -91,6 +120,10 @@ pub struct PanelResult {
     pub cost_usd: Option<f64>,
     pub warnings: Vec<&'static str>,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ensemble_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member_index: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +138,8 @@ struct Session {
     original: String,
     prepared: PreparedSelection,
     models: Vec<ModelRef>,
+    /// Ensemble profiles: id -> members.
+    profiles: Vec<(String, Vec<ModelRef>)>,
     /// `preset|model|instruction` -> request id of the finished result.
     cache: HashMap<String, String>,
     results: HashMap<String, Stored>,
@@ -176,6 +211,103 @@ fn presets(settings: &AppSettings) -> Vec<PanelPreset> {
         .collect()
 }
 
+fn panel_model(settings: &AppSettings, model: &ModelRef) -> PanelModel {
+    PanelModel {
+        key: format!(
+            "{}/{}",
+            model.color_key(),
+            model.effort.map_or("default", |effort| effort.as_str())
+        ),
+        label: runtime::model_label(model),
+        effort: model.effort.map(|effort| effort.as_str().to_string()),
+        color: runtime::model_color(settings, model),
+        billing: model.provider.billing().as_str(),
+    }
+}
+
+/// Maximum members running at once, and of those at most two subscription CLIs (spec M7).
+const ENSEMBLE_PARALLEL: usize = 4;
+const ENSEMBLE_PARALLEL_CLI: usize = 2;
+const ENSEMBLE_MAX_MEMBERS: usize = 9;
+
+/// Configured ensemble profiles, or an implicit "Favorites" profile with up to four distinct
+/// models from the quick model and favorites.
+fn ensemble_profiles(settings: &AppSettings) -> Vec<(String, String, Vec<ModelRef>)> {
+    let configured: Vec<_> = settings
+        .text_assist
+        .ensemble_profiles
+        .iter()
+        .filter(|profile| !profile.members.is_empty())
+        .map(|profile| {
+            let members = profile
+                .members
+                .iter()
+                .take(ENSEMBLE_MAX_MEMBERS)
+                .cloned()
+                .collect();
+            (profile.id.clone(), profile.name.clone(), members)
+        })
+        .collect();
+    if !configured.is_empty() {
+        return configured;
+    }
+    let mut members: Vec<ModelRef> = Vec::new();
+    let assist = &settings.text_assist;
+    for model in std::iter::once(&assist.quick_model).chain(assist.favorite_models.iter()) {
+        if !members.contains(model) && members.len() < ENSEMBLE_PARALLEL {
+            members.push(model.clone());
+        }
+    }
+    vec![("favorites".to_string(), "Favorites".to_string(), members)]
+}
+
+fn is_cli(provider: ProviderKind) -> bool {
+    matches!(provider, ProviderKind::CodexCli | ProviderKind::ClaudeCli)
+}
+
+/// Conservative per-member estimate in USD: input = (instructions + text) / 3 tokens, output =
+/// 1.3 x the text plus a reasoning allowance per effort. Plan and local members cost nothing
+/// extra; `None` for a paid model without a catalog price.
+pub(crate) fn estimate_member_usd(
+    model: &ModelRef,
+    instruction_chars: usize,
+    input_chars: usize,
+) -> Option<f64> {
+    if model.provider.billing() != Billing::Api {
+        return Some(0.0);
+    }
+    let entry = catalog::find(model.provider, &model.model)?;
+    let (input_price, output_price) = catalog::current_prices(entry);
+    let input_tokens = ((instruction_chars + input_chars) as f64 / 3.0).ceil();
+    let reasoning = match model.effort {
+        None | Some(Effort::None) | Some(Effort::Minimal) => 0.0,
+        Some(Effort::Low) => 1_000.0,
+        Some(Effort::Medium) => 3_000.0,
+        Some(Effort::High) => 8_000.0,
+        Some(Effort::Xhigh) | Some(Effort::Max) => 16_000.0,
+    };
+    let output_tokens = (input_chars as f64 / 3.0 * 1.3).ceil() + reasoning;
+    Some(input_tokens * input_price / 1e6 + output_tokens * output_price / 1e6)
+}
+
+/// Sums member estimates and decides whether the per-run limit blocks the run.
+pub(crate) fn ensemble_cost(
+    members: &[ModelRef],
+    instruction_chars: usize,
+    input_chars: usize,
+    limit_usd: f64,
+) -> (f64, bool, bool) {
+    let mut total = 0.0;
+    let mut unknown = false;
+    for member in members {
+        match estimate_member_usd(member, instruction_chars, input_chars) {
+            Some(cost) => total += cost,
+            None => unknown = true,
+        }
+    }
+    (total, unknown, total > limit_usd)
+}
+
 /// Opens a panel session for the current foreground selection. Runs on the chord worker thread.
 pub(crate) fn open(rt: &Arc<Runtime>) {
     close_session(rt, false);
@@ -204,6 +336,7 @@ pub(crate) fn open(rt: &Arc<Runtime>) {
     };
     let models = panel_models(&settings);
     let presets = presets(&settings);
+    let profiles = ensemble_profiles(&settings);
     let active_preset_id = presets
         .iter()
         .find(|preset| preset.id == settings.text_assist.last_preset_id)
@@ -222,21 +355,23 @@ pub(crate) fn open(rt: &Arc<Runtime>) {
         active_preset_id,
         models: models
             .iter()
-            .map(|model| PanelModel {
-                key: format!(
-                    "{}/{}",
-                    model.color_key(),
-                    model.effort.map_or("default", |effort| effort.as_str())
-                ),
-                label: runtime::model_label(model),
-                effort: model.effort.map(|effort| effort.as_str().to_string()),
-                color: runtime::model_color(&settings, model),
-                billing: model.provider.billing().as_str(),
-            })
+            .map(|model| panel_model(&settings, model))
             .collect(),
         active_model_index: 0,
         custom_instructions: settings.text_assist.custom_instructions.clone(),
         max_chars: limit,
+        ensemble_profiles: profiles
+            .iter()
+            .map(|(id, name, members)| PanelEnsembleProfile {
+                id: id.clone(),
+                name: name.clone(),
+                members: members
+                    .iter()
+                    .map(|model| panel_model(&settings, model))
+                    .collect(),
+            })
+            .collect(),
+        ensemble_max_usd: settings.text_assist.limits.ensemble_max_usd_per_run,
     };
     let anchor = target.anchor;
     *SESSION.lock().unwrap() = Some(Session {
@@ -245,6 +380,10 @@ pub(crate) fn open(rt: &Arc<Runtime>) {
         target,
         original,
         models,
+        profiles: profiles
+            .into_iter()
+            .map(|(id, _, members)| (id, members))
+            .collect(),
         cache: HashMap::new(),
         results: HashMap::new(),
         running: None,
@@ -309,6 +448,8 @@ struct PanelJob {
     original: String,
     target_app: Option<String>,
     cache_key: String,
+    kind: &'static str,
+    ensemble_run_id: Option<String>,
 }
 
 fn record(rt: &Runtime, job: &PanelJob, run: TextAssistRun) -> Option<String> {
@@ -340,9 +481,9 @@ fn history_row(
     TextAssistRun {
         id: uuid::Uuid::new_v4().to_string(),
         created_at: Utc::now().to_rfc3339(),
-        kind: KIND_REWRITE.to_string(),
+        kind: job.kind.to_string(),
         preset_id: Some(job.preset_id.clone()),
-        ensemble_run_id: None,
+        ensemble_run_id: job.ensemble_run_id.clone(),
         provider: job.model.provider.as_str().to_string(),
         model: job.model.model.clone(),
         effort: job.model.effort.map(|effort| effort.as_str().to_string()),
@@ -573,6 +714,8 @@ pub fn panel_run(
         cost_usd: None,
         warnings: Vec::new(),
         error: None,
+        ensemble_run_id: None,
+        member_index: None,
     };
     let cache_key = format!("{}|{}|{}", preset.id, model_index, instruction);
     if !fresh {
@@ -610,6 +753,8 @@ pub fn panel_run(
         original: session.original.clone(),
         target_app: session.target.exe_name.clone(),
         cache_key,
+        kind: KIND_REWRITE,
+        ensemble_run_id: None,
     };
     drop(guard);
     remember_choice(
@@ -619,6 +764,202 @@ pub fn panel_run(
     );
     tauri::async_runtime::spawn(run_request(rt, job, cancel));
     Ok(request_id)
+}
+
+/// Resolves a preset's instruction (Custom uses the typed instruction).
+fn preset_instruction(
+    session: &Session,
+    preset_id: &str,
+    custom: Option<String>,
+) -> Result<(PanelPreset, String, Option<String>), String> {
+    let preset = session
+        .init
+        .presets
+        .iter()
+        .find(|preset| preset.id == preset_id)
+        .cloned()
+        .ok_or("Unknown preset")?;
+    let custom = custom
+        .map(|text| text.trim().chars().take(500).collect::<String>())
+        .filter(|text| !text.is_empty());
+    let instruction = if preset.id == prompts::PRESET_CUSTOM {
+        custom.clone().ok_or("Type an instruction first")?
+    } else {
+        preset.instruction.clone()
+    };
+    Ok((preset, instruction, custom))
+}
+
+fn preview_for(
+    session: &Session,
+    settings: &AppSettings,
+    profile_id: &str,
+    instruction: &str,
+) -> Result<(Vec<ModelRef>, EnsemblePreview), String> {
+    let members = session
+        .profiles
+        .iter()
+        .find(|(id, _)| id == profile_id)
+        .map(|(_, members)| members.clone())
+        .ok_or("Unknown ensemble profile")?;
+    if members.is_empty() {
+        return Err("This ensemble profile has no members".to_string());
+    }
+    let instruction_chars = prompts::instructions_for(prompts::PRESET_CUSTOM, instruction)
+        .chars()
+        .count();
+    let input_chars = session.prepared.core.chars().count();
+    let limit = settings.text_assist.limits.ensemble_max_usd_per_run;
+    let (estimated, unknown, blocked) =
+        ensemble_cost(&members, instruction_chars, input_chars, limit);
+    let mut providers: Vec<String> = members
+        .iter()
+        .map(|model| model.provider.as_str().to_string())
+        .collect();
+    providers.dedup();
+    Ok((
+        members.clone(),
+        EnsemblePreview {
+            profile_id: profile_id.to_string(),
+            members: members
+                .iter()
+                .map(|model| panel_model(settings, model))
+                .collect(),
+            providers,
+            estimated_usd: estimated,
+            unknown_cost: unknown,
+            limit_usd: limit,
+            blocked,
+        },
+    ))
+}
+
+#[tauri::command]
+pub fn panel_ensemble_preview(
+    window: tauri::WebviewWindow,
+    profile_id: String,
+    preset_id: String,
+    custom_instruction: Option<String>,
+) -> Result<EnsemblePreview, String> {
+    require_panel(&window)?;
+    let rt = runtime::current().ok_or("Text Assist is not running")?;
+    let settings = (rt.settings)();
+    let guard = SESSION.lock().unwrap();
+    let session = guard.as_ref().ok_or("The panel is closed")?;
+    let (_, instruction, _) = preset_instruction(session, &preset_id, custom_instruction)?;
+    preview_for(session, &settings, &profile_id, &instruction).map(|(_, preview)| preview)
+}
+
+/// Runs every member of an ensemble profile on the same preset (spec 2.3). Returns the
+/// ensemble run id; each member streams `PanelResult`s with `ensembleRunId`/`memberIndex`.
+#[tauri::command]
+pub fn panel_run_ensemble(
+    window: tauri::WebviewWindow,
+    profile_id: String,
+    preset_id: String,
+    custom_instruction: Option<String>,
+) -> Result<String, String> {
+    require_panel(&window)?;
+    let rt = runtime::current().ok_or("Text Assist is not running")?;
+    let settings = (rt.settings)();
+    let mut guard = SESSION.lock().unwrap();
+    let session = guard.as_mut().ok_or("The panel is closed")?;
+    let (preset, instruction, custom) =
+        preset_instruction(session, &preset_id, custom_instruction)?;
+    let (members, preview) = preview_for(session, &settings, &profile_id, &instruction)?;
+    if preview.blocked {
+        return Err(format!(
+            "Estimated ${:.4} exceeds the per-run limit of ${:.2}",
+            preview.estimated_usd, preview.limit_usd
+        ));
+    }
+    if let Some(cancel) = session.running.take() {
+        cancel.cancel();
+    }
+    let cancel = CancelToken::new();
+    session.running = Some(cancel.clone());
+    let ensemble_run_id = uuid::Uuid::new_v4().to_string();
+    let jobs: Vec<PanelJob> = members
+        .iter()
+        .enumerate()
+        .map(|(index, model)| {
+            let info = &preview.members[index];
+            let model_index = session
+                .models
+                .iter()
+                .position(|candidate| candidate == model)
+                .unwrap_or(usize::MAX);
+            PanelJob {
+                base: PanelResult {
+                    session_id: session.init.session_id.clone(),
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    preset_id: preset.id.clone(),
+                    model_index,
+                    phase: "thinking",
+                    text: String::new(),
+                    label: info.label.clone(),
+                    effort: info.effort.clone(),
+                    billing: info.billing,
+                    color: info.color.clone(),
+                    duration_ms: None,
+                    cost_usd: None,
+                    warnings: Vec::new(),
+                    error: None,
+                    ensemble_run_id: Some(ensemble_run_id.clone()),
+                    member_index: Some(index),
+                },
+                model: model.clone(),
+                preset_id: preset.id.clone(),
+                instruction: instruction.clone(),
+                prepared: session.prepared.clone(),
+                original: session.original.clone(),
+                target_app: session.target.exe_name.clone(),
+                cache_key: format!("ensemble|{ensemble_run_id}|{index}"),
+                kind: KIND_ENSEMBLE,
+                ensemble_run_id: Some(ensemble_run_id.clone()),
+            }
+        })
+        .collect();
+    drop(guard);
+    let is_custom = preset.id == prompts::PRESET_CUSTOM;
+    remember_choice(
+        &rt,
+        &preset.id,
+        if is_custom { custom.as_deref() } else { None },
+    );
+    tauri::async_runtime::spawn(async move {
+        let all = Arc::new(tokio::sync::Semaphore::new(ENSEMBLE_PARALLEL));
+        let cli = Arc::new(tokio::sync::Semaphore::new(ENSEMBLE_PARALLEL_CLI));
+        let mut handles = Vec::new();
+        for job in jobs {
+            // Show every card at once; queued members wait for a slot.
+            emit(&rt, &job.base);
+            let (rt, cancel, all, cli) = (rt.clone(), cancel.clone(), all.clone(), cli.clone());
+            handles.push(tauri::async_runtime::spawn(async move {
+                let _slot = all.acquire_owned().await;
+                let _cli_slot = if is_cli(job.model.provider) {
+                    Some(cli.acquire_owned().await)
+                } else {
+                    None
+                };
+                if cancel.is_cancelled() {
+                    emit(
+                        &rt,
+                        &PanelResult {
+                            phase: "cancelled",
+                            ..job.base.clone()
+                        },
+                    );
+                    return;
+                }
+                run_request(rt, job, cancel).await;
+            }));
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    });
+    Ok(ensemble_run_id)
 }
 
 #[tauri::command]
@@ -747,6 +1088,58 @@ mod tests {
         assert_eq!(rect.x, -1200);
         assert!(rect.y >= work.y && rect.bottom() <= work.bottom());
         assert_eq!(rect.height, 420);
+    }
+
+    #[test]
+    fn implicit_ensemble_uses_up_to_four_distinct_models() {
+        let mut settings = AppSettings::default();
+        let profiles = ensemble_profiles(&settings);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].0, "favorites");
+        assert_eq!(profiles[0].2.len(), 2);
+        for model in ["a", "b", "c", "d", "e"] {
+            settings.text_assist.favorite_models.push(ModelRef::new(
+                ProviderKind::Openai,
+                model,
+                None,
+            ));
+        }
+        assert_eq!(ensemble_profiles(&settings)[0].2.len(), 4);
+        settings
+            .text_assist
+            .ensemble_profiles
+            .push(crate::types::EnsembleProfile {
+                id: "deep".to_string(),
+                name: "Deep".to_string(),
+                members: vec![ModelRef::new(ProviderKind::ClaudeCli, "opus", None)],
+            });
+        let profiles = ensemble_profiles(&settings);
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].0, "deep");
+    }
+
+    #[test]
+    fn ensemble_cost_sums_paid_members_and_blocks_over_the_limit() {
+        let luna = ModelRef::new(ProviderKind::Openai, "gpt-6-luna", Some(Effort::None));
+        let plan = ModelRef::new(ProviderKind::ClaudeCli, "opus", None);
+        let unknown = ModelRef::new(ProviderKind::Openai, "not-in-catalog", None);
+        // 3,000 chars of text: input (300 + 3,000) / 3 = 1,100 tokens; output 1,300 tokens.
+        let one = estimate_member_usd(&luna, 300, 3_000).unwrap();
+        assert!((one - (1_100.0 * 0.10 + 1_300.0 * 0.50) / 1e6).abs() < 1e-12);
+        assert_eq!(estimate_member_usd(&plan, 300, 3_000), Some(0.0));
+        assert_eq!(estimate_member_usd(&unknown, 300, 3_000), None);
+        let (total, unknown_cost, blocked) =
+            ensemble_cost(&[luna.clone(), plan, unknown], 300, 3_000, 0.05);
+        assert!((total - one).abs() < 1e-12);
+        assert!(unknown_cost);
+        assert!(!blocked);
+        let opus = ModelRef::new(
+            ProviderKind::Anthropic,
+            "claude-opus-5-5",
+            Some(Effort::Max),
+        );
+        let (_, _, blocked) = ensemble_cost(&[opus.clone(), opus], 300, 30_000, 0.05);
+        assert!(blocked);
     }
 
     #[test]
