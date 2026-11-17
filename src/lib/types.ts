@@ -168,6 +168,18 @@ export type TextModelInfo = {
   shutdown: string | null;
 };
 
+/** Rust `TextProviderKeys`: which provider keys are saved (never the keys themselves). */
+export type TextProviderKeys = {
+  openai: boolean;
+  anthropic: boolean;
+  gemini: boolean;
+  /** Endpoint id -> key saved, for the requested OpenAI-compatible endpoints. */
+  compat: Record<string, boolean>;
+};
+
+/** Providers whose keys are managed with `save_text_provider_key` / `delete_text_provider_key`. */
+export type KeyedTextProvider = "anthropic" | "gemini" | "openai_compatible";
+
 export type TextAssistOverview = {
   totals: TextAssistCostTotals;
   models: TextModelInfo[];

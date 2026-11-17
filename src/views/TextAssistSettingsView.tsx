@@ -3,11 +3,20 @@ import { Check } from "lucide-react";
 import {
   PASTE_RESTORE_DELAY_MS,
   QUICK_MAX_CHARS,
+  catalogOptionLabel,
+  effortForModel,
   effortLabel,
-  formatModelPrice,
+  findCatalogModel,
+  groupCatalogModels,
+  modelOptionValue,
+  modelRef,
+  needsKey,
+  parseModelOptionValue,
+  providerLabel,
   useTextAssistOverview,
+  useTextProviderKeys,
 } from "../lib/textAssist";
-import type { AppSettings, Effort, ModelRef, SettingsChange, TextAssistSettings, TextModelInfo } from "../lib/types";
+import type { AppSettings, Effort, SettingsChange, TextAssistSettings, TextProviderKind } from "../lib/types";
 
 type Props = {
   settings: AppSettings;
@@ -25,20 +34,12 @@ export function validateLimit(draft: string, range: { min: number; max: number }
   return null;
 }
 
-function modelOptionLabel(model: TextModelInfo) {
-  const retiring = model.shutdown ? ` (retires ${model.shutdown})` : "";
-  return `${model.label} - ${formatModelPrice(model)}${retiring}`;
-}
-
-/** The effort to keep when switching models: the current one if offered, else the model default. */
-function effortFor(model: TextModelInfo, current: ModelRef["effort"]): Effort | null {
-  if (current && model.efforts.includes(current)) return current;
-  return model.defaultEffort ?? model.efforts[0] ?? null;
-}
+const NO_KEY_ENDPOINTS: string[] = [];
 
 export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: Props) {
   const assist = settings.textAssist;
   const { overview, error: modelsError } = useTextAssistOverview();
+  const { keys } = useTextProviderKeys(NO_KEY_ENDPOINTS);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [quickMaxDraft, setQuickMaxDraft] = useState(String(assist.limits.quickMaxChars));
@@ -49,14 +50,12 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
   useEffect(() => { setQuickMaxDraft(String(assist.limits.quickMaxChars)); }, [assist.limits.quickMaxChars]);
   useEffect(() => { setDelayDraft(String(assist.limits.pasteRestoreDelayMs)); }, [assist.limits.pasteRestoreDelayMs]);
 
-  const models = useMemo(() => {
-    const openai = (overview?.models ?? []).filter((model) => model.provider === "openai");
-    return [...openai.filter((model) => model.quickCandidate), ...openai.filter((model) => !model.quickCandidate)];
-  }, [overview]);
+  const models = useMemo(() => overview?.models ?? [], [overview]);
+  const groups = useMemo(() => groupCatalogModels(models), [models]);
   const quickModel = assist.quickModel;
-  const current = models.find((model) => model.provider === quickModel.provider && model.id === quickModel.model) ?? null;
-  const quickCandidates = models.filter((model) => model.quickCandidate);
-  const others = models.filter((model) => !model.quickCandidate);
+  const current = findCatalogModel(models, quickModel);
+  // The OpenAI key status comes from App (it changes in Settings, General); the others from Credential Manager.
+  const missingKey = (provider: TextProviderKind) => (provider === "openai" ? !hasKey : needsKey({ provider }, keys));
   const efforts: Effort[] = current ? current.efforts : quickModel.effort ? [quickModel.effort] : [];
 
   const quickMaxError = validateLimit(quickMaxDraft, QUICK_MAX_CHARS, "characters");
@@ -78,13 +77,11 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
     }
   }
 
-  function selectModel(id: string) {
-    const model = models.find((item) => item.id === id);
+  function selectModel(value: string) {
+    const parsed = parseModelOptionValue(value);
+    const model = parsed ? findCatalogModel(models, parsed) : null;
     if (!model) return;
-    const effort = effortFor(model, quickModel.effort);
-    const next: ModelRef = { provider: model.provider, model: model.id };
-    if (effort) next.effort = effort;
-    void save({ quickModel: next });
+    void save({ quickModel: modelRef(model.provider, model.id, effortForModel(model, quickModel.effort)) });
   }
 
   function saveLimits() {
@@ -98,7 +95,8 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
     });
   }
 
-  const needsKey = !hasKey && !assist.devOfflineTransform && quickModel.provider === "openai";
+  const quickNeedsKey = !assist.devOfflineTransform && missingKey(quickModel.provider);
+  const quickHasKey = quickModel.provider === "openai" ? hasKey : keys ? !needsKey(quickModel, keys) : false;
 
   return (
     <div className="settings-stack">
@@ -109,9 +107,11 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
         <div className="section-title">
           <div>
             <h3 id={`${ids}-title`}>Text Assist</h3>
-            <p>{hasKey ? "Uses the OpenAI key stored in Windows Credential Manager" : "Requires an OpenAI key"}</p>
+            <p>{quickHasKey
+              ? `Uses the ${providerLabel(quickModel.provider)} key stored in Windows Credential Manager`
+              : `Requires a key for ${providerLabel(quickModel.provider)}`}</p>
           </div>
-          {hasKey && <Check size={18} aria-hidden="true" />}
+          {quickHasKey && <Check size={18} aria-hidden="true" />}
         </div>
         <label className="toggle-row">
           <input type="checkbox" checked={assist.enabled} disabled={busy}
@@ -122,9 +122,11 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
           Select text in any app and tap <kbd>Shift</kbd>+<kbd>Win</kbd> to fix spelling, grammar and punctuation in place.
           Hold <kbd>Shift</kbd>+<kbd>Win</kbd> for the Rewrite panel (coming soon).
         </p>
-        {needsKey && (
+        {quickNeedsKey && (
           <p className="warning-text ta-key-note">
-            Quick Polish needs an OpenAI API key. Add one under Settings, General, OpenAI key. The same key is used for dictation.
+            {quickModel.provider === "openai"
+              ? "Quick Polish needs an OpenAI API key. Add one under Settings, General, OpenAI key. The same key is used for dictation."
+              : `Quick Polish needs an API key for ${providerLabel(quickModel.provider)}. Add one under AI Models, Text models.`}
           </p>
         )}
       </section>
@@ -133,20 +135,19 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
         <h3 id={`${ids}-model-title`}>Quick Polish</h3>
         <label className="field">
           <span>Model</span>
-          <select value={quickModel.model} disabled={busy || models.length === 0}
+          <select value={modelOptionValue(quickModel)} disabled={busy || models.length === 0}
             aria-describedby={`${ids}-model-hint`}
             onChange={(event) => selectModel(event.target.value)}>
-            {!current && <option value={quickModel.model}>{quickModel.model}{overview ? " (not in the model list)" : ""}</option>}
-            {quickCandidates.length > 0 && (
-              <optgroup label="Recommended for Quick Polish">
-                {quickCandidates.map((model) => <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>)}
+            {!current && <option value={modelOptionValue(quickModel)}>{quickModel.model}{overview ? " (not in the model list)" : ""}</option>}
+            {groups.map((group) => (
+              <optgroup key={group.provider} label={providerLabel(group.provider)}>
+                {group.models.map((model) => (
+                  <option key={model.id} value={modelOptionValue({ provider: model.provider, model: model.id })}>
+                    {catalogOptionLabel(model, missingKey(model.provider))}{model.quickCandidate ? " (recommended)" : ""}
+                  </option>
+                ))}
               </optgroup>
-            )}
-            {others.length > 0 && (
-              <optgroup label="Other OpenAI models">
-                {others.map((model) => <option key={model.id} value={model.id}>{modelOptionLabel(model)}</option>)}
-              </optgroup>
-            )}
+            ))}
           </select>
         </label>
         <label className="field">
@@ -160,7 +161,7 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
         <p className="hint" id={`${ids}-model-hint`}>
           {!overview && !modelsError ? "Loading the model list..."
             : current?.shutdown ? `${current.label} retires on ${current.shutdown}. Choose another model before then.`
-              : "Prices are OpenAI list prices per million tokens. Lower effort answers faster; Quick Polish rarely needs more than low."}
+              : "Recommended models are fast and inexpensive. Prices are provider list prices per million tokens. Lower effort answers faster; Quick Polish rarely needs more than low."}
         </p>
         {modelsError && <p className="error-text" role="alert">Could not load the model list: {modelsError}</p>}
       </section>

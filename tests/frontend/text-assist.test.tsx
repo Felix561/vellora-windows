@@ -6,7 +6,7 @@ import { HistoryView } from "../../src/views/HistoryView";
 import { DashboardView } from "../../src/views/DashboardView";
 import * as api from "../../src/lib/api";
 import type { AppSettings } from "../../src/lib/types";
-import { health, settings, stats, textAssistOverview, textAssistRun, textAssistSettings, transcript } from "./fixtures";
+import { health, settings, stats, textAssistOverview, textAssistRun, textAssistSettings, textProviderKeys, transcript } from "./fixtures";
 
 vi.mock("../../src/lib/api", () => ({
   getStartAtLogin: vi.fn(),
@@ -24,6 +24,7 @@ vi.mock("../../src/lib/api", () => ({
   clearTextAssistRuns: vi.fn(),
   copyTextAssistText: vi.fn(),
   onTextAssistRunRecorded: vi.fn(),
+  getTextProviderKeys: vi.fn(),
 }));
 
 let runRecorded: ((runId: string) => void) | null;
@@ -33,6 +34,7 @@ beforeEach(() => {
   vi.mocked(api.getStartAtLogin).mockResolvedValue(false);
   vi.mocked(api.getDashboardStats).mockResolvedValue(stats());
   vi.mocked(api.getTextAssistOverview).mockResolvedValue(textAssistOverview());
+  vi.mocked(api.getTextProviderKeys).mockResolvedValue(textProviderKeys({ gemini: true }));
   vi.mocked(api.listTextAssistRuns).mockResolvedValue([]);
   vi.mocked(api.deleteTextAssistRun).mockResolvedValue(true);
   vi.mocked(api.clearTextAssistRuns).mockResolvedValue(2);
@@ -53,21 +55,56 @@ async function openTextAssistSettings(props: Partial<{ saved: AppSettings; hasKe
 }
 
 describe("Text Assist settings", () => {
-  it("renders the section with OpenAI models only, quick candidates first", async () => {
+  it("groups all catalog providers with quick candidates first and marks missing keys", async () => {
     await openTextAssistSettings();
     expect(screen.getByRole("tabpanel", { name: "Text Assist" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Enable Text Assist" })).toBeChecked();
     expect(screen.getByText(/Select text in any app and tap/)).toHaveTextContent(
       "Select text in any app and tap Shift+Win to fix spelling, grammar and punctuation in place. Hold Shift+Win for the Rewrite panel (coming soon).",
     );
-    const options = within(screen.getByRole("combobox", { name: "Model" })).getAllByRole("option");
-    expect(options.map((option) => option.textContent)).toEqual([
-      "GPT-6 Luna - $0.20 in / $0.80 out per 1M tokens",
+    const select = screen.getByRole("combobox", { name: "Model" });
+    const groups = within(select).getAllByRole("group");
+    expect(groups.map((group) => group.getAttribute("label"))).toEqual(["OpenAI", "Anthropic", "Google Gemini"]);
+    expect(within(groups[0]).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "GPT-6 Luna - $0.20 in / $0.80 out per 1M tokens (recommended)",
       "GPT-5.6 Luna - $1.00 in / $4.00 out per 1M tokens",
     ]);
-    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("gpt-6-luna");
+    await waitFor(() => expect(within(groups[1]).getByRole("option")).toHaveTextContent(
+      "Claude Haiku 5.5 - $0.20 in / $0.80 out per 1M tokens - needs key (recommended)",
+    ));
+    expect(within(groups[2]).getByRole("option")).toHaveTextContent("Gemini 3.1 Flash-Lite - $0.25 in / $1.50 out per 1M tokens (recommended)");
+    expect(within(groups[2]).getByRole("option")).not.toHaveTextContent("needs key");
+    expect(select).toHaveDisplayValue(/^GPT-6 Luna/);
+    expect(api.getTextProviderKeys).toHaveBeenCalledWith([]);
     expect(screen.getByText(/Only the selected text is sent, to the provider you chose\./)).toBeInTheDocument();
     expect(screen.queryByText(/needs an OpenAI API key/)).not.toBeInTheDocument();
+  });
+
+  it("switches the quick model across providers and keeps only offered efforts", async () => {
+    const { user, onSettingsChange } = await openTextAssistSettings();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), screen.getByRole("option", { name: /^Claude Haiku 5\.5/ }));
+    expect(onSettingsChange).toHaveBeenLastCalledWith({
+      textAssist: textAssistSettings({ quickModel: { provider: "anthropic", model: "claude-haiku-5-5", effort: "none" } }),
+    });
+
+    // Gemini Flash-Lite has no "none", so its default effort is used.
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled());
+    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), screen.getByRole("option", { name: /^Gemini 3\.1 Flash-Lite/ }));
+    expect(onSettingsChange).toHaveBeenLastCalledWith({
+      textAssist: textAssistSettings({ quickModel: { provider: "gemini", model: "gemini-3.1-flash-lite", effort: "minimal" } }),
+    });
+  });
+
+  it("offers the saved Gemini model's efforts and warns about a missing Anthropic key", async () => {
+    const view = await openTextAssistSettings({ saved: settings({ textAssist: textAssistSettings({ quickModel: { provider: "gemini", model: "gemini-3.1-flash-lite", effort: "low" } }) }) });
+    const effort = screen.getByRole("combobox", { name: "Reasoning effort" });
+    expect(within(effort).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["minimal", "low", "medium", "high"]);
+    expect(effort).toHaveValue("low");
+    expect(screen.queryByText(/Quick Polish needs/)).not.toBeInTheDocument();
+
+    view.rerender(<SettingsView settings={settings({ textAssist: textAssistSettings({ quickModel: { provider: "anthropic", model: "claude-haiku-5-5", effort: "none" } }) })} hasKey onSettingsChange={view.onSettingsChange} onKeyStatusChange={vi.fn()} />);
+    expect(await screen.findByText("Quick Polish needs an API key for Anthropic. Add one under AI Models, Text models.")).toBeInTheDocument();
+    expect(screen.getByText("Requires a key for Anthropic")).toBeInTheDocument();
   });
 
   it("limits effort options to the model and saves the whole textAssist block", async () => {
@@ -82,7 +119,7 @@ describe("Text Assist settings", () => {
 
     // "none" is not offered by GPT-5.6 Luna, so switching falls back to its default effort.
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled());
-    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), "gpt-5.6-luna");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Model" }), screen.getByRole("option", { name: /^GPT-5\.6 Luna/ }));
     expect(onSettingsChange).toHaveBeenLastCalledWith({
       textAssist: textAssistSettings({ quickModel: { provider: "openai", model: "gpt-5.6-luna", effort: "low" } }),
     });

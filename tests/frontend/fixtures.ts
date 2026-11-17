@@ -6,6 +6,7 @@ import type {
   TextAssistRun,
   TextAssistSettings,
   TextModelInfo,
+  TextProviderKeys,
   TranscriptHistoryItem,
 } from "../../src/lib/types";
 
@@ -95,11 +96,16 @@ export function textAssistOverview(overrides: Partial<TextAssistOverview> = {}):
     models: [
       textModel({ id: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: ["low", "medium", "high"], defaultEffort: "low", quickCandidate: false, inputUsdPerMillion: 1, outputUsdPerMillion: 4 }),
       textModel(),
-      textModel({ provider: "anthropic", id: "claude-haiku-5-5", label: "Claude Haiku 5.5", efforts: ["none"] }),
+      textModel({ provider: "anthropic", id: "claude-haiku-5-5", label: "Claude Haiku 5.5", efforts: ["none"], color: "#e9a07f" }),
+      textModel({ provider: "gemini", id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", efforts: ["minimal", "low", "medium", "high"], defaultEffort: "minimal", inputUsdPerMillion: 0.25, outputUsdPerMillion: 1.5, color: "#7baaf7" }),
     ],
     lastKept: null,
     ...overrides,
   };
+}
+
+export function textProviderKeys(overrides: Partial<TextProviderKeys> = {}): TextProviderKeys {
+  return { openai: true, anthropic: false, gemini: false, compat: {}, ...overrides };
 }
 
 export function transcript(overrides: Partial<TranscriptHistoryItem> = {}): TranscriptHistoryItem {

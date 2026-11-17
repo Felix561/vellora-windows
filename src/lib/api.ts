@@ -15,6 +15,8 @@ import type {
   MicrophoneCheck,
   TextAssistOverview,
   TextAssistRun,
+  TextProviderKeys,
+  KeyedTextProvider,
 } from "./types";
 
 export function getSettings() {
@@ -160,4 +162,18 @@ export function getTextAssistOverview() {
 /** Emitted to the main window after a Text Assist run is saved; the payload is the run id. */
 export function onTextAssistRunRecorded(handler: (runId: string) => void) {
   return listen<string>("text-assist-run-recorded", (event) => handler(event.payload));
+}
+
+/** Which provider keys are saved; `endpointIds` selects the OpenAI-compatible endpoints to check. */
+export function getTextProviderKeys(endpointIds: string[]) {
+  return invoke<TextProviderKeys>("get_text_provider_keys", { endpointIds });
+}
+
+/** Saves an Anthropic, Gemini or OpenAI-compatible endpoint key. The OpenAI key uses `saveOpenAiApiKey`. */
+export function saveTextProviderKey(provider: KeyedTextProvider, endpointId: string | null, key: string) {
+  return invoke<void>("save_text_provider_key", { provider, endpointId, key });
+}
+
+export function deleteTextProviderKey(provider: KeyedTextProvider, endpointId: string | null) {
+  return invoke<void>("delete_text_provider_key", { provider, endpointId });
 }

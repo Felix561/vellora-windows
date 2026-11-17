@@ -2,6 +2,8 @@ import { Check, Gauge, Mic, Users } from "lucide-react";
 import { useState } from "react";
 import { BRAND } from "../lib/brand";
 import type { AppSettings, SettingsChange, SttModel } from "../lib/types";
+import { SectionTabs } from "./SectionTabs";
+import { TextModelsView } from "./TextModelsView";
 
 type Props = {
   settings: AppSettings;
@@ -45,7 +47,32 @@ const models: Array<{
   },
 ];
 
+type ModelsTab = "transcription" | "text";
+
+const modelsTabs: ReadonlyArray<{ id: ModelsTab; label: string }> = [
+  { id: "transcription", label: "Transcription" },
+  { id: "text", label: "Text models" },
+];
+
 export function ModelsView({ settings, onSettingsChange }: Props) {
+  const [tab, setTab] = useState<ModelsTab>("transcription");
+  return (
+    <div className="models-page">
+      <SectionTabs idPrefix="models" label="Model sections" tabs={modelsTabs} selected={tab} onSelect={setTab} />
+      {tab === "transcription" ? (
+        <div className="models-page" role="tabpanel" id="models-panel-transcription" aria-labelledby="models-tab-transcription">
+          <TranscriptionModels settings={settings} onSettingsChange={onSettingsChange} />
+        </div>
+      ) : (
+        <div role="tabpanel" id="models-panel-text" aria-labelledby="models-tab-text">
+          <TextModelsView settings={settings} onSettingsChange={onSettingsChange} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TranscriptionModels({ settings, onSettingsChange }: Props) {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ text: string; error: boolean } | null>(null);
   async function selectModel(model: SttModel) {
@@ -60,7 +87,7 @@ export function ModelsView({ settings, onSettingsChange }: Props) {
   }
 
   return (
-    <div className="models-page">
+    <>
       <section className="panel models-intro">
         <h3>Choose how {BRAND.appName} listens</h3>
         <p>Compare models on your own recordings. GPT-4o mini Transcribe is the lower cost GPT option.</p>
@@ -83,6 +110,6 @@ export function ModelsView({ settings, onSettingsChange }: Props) {
           );
         })}
       </section>
-    </div>
+    </>
   );
 }
