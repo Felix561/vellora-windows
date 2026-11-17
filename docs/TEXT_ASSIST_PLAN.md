@@ -639,6 +639,41 @@ Nothing is pushed without the owner's explicit OK.
 - **Output:** a findings table appended to this document. Design changes, if any, are confirmed
   with the owner before M2.
 
+#### M1 findings (automated probe, November 17, 2026, 15:11-15:16 CET)
+
+Measured with a throwaway PowerShell/C# probe that opened synthetic files in Windows 11 Notepad
+(RichEditD2D), VS Code 1.146 (isolated profile, extensions disabled) and TeXstudio 4.9.8 (Qt 6,
+isolated config), injected signed input and inspected the clipboard and accessibility APIs. Input
+was injected, not physical; rows marked "confirm" still need one physical check in the M2 matrix.
+TeXmaker is not installed and was not measured.
+
+| Question | Notepad | VS Code | TeXstudio | Consequence |
+| --- | --- | --- | --- | --- |
+| Shift+Win opens Start? (all four press/release orders, and a 600 ms hold) | No | No | No | No mask key needed. Control: Win alone opened Start. Confirm physically. |
+| Ctrl+C: first clipboard change | 0-13 ms | 11-16 ms | 0-16 ms | 500 ms timeout is ample. |
+| Extra sequence changes after the first | up to 7 (OLE delayed rendering) | 0 | up to 5 | **Wait until the sequence number is stable for 50 ms (max 250 ms) before reading or restoring.** |
+| Selection text | Shift+End selected the line *including* its line break | as selected | as selected | Whitespace restore (5.3) must keep a trailing line break; already specified. |
+| VS Code marker location | - | Inside `Chromium Web Custom MIME Data Format` as JSON `{"version":1,"id":…,"isFromEmptySelection":bool,"isBlock":bool,"multicursorText":…,"mode":…}`; no separate format | - | Parse that blob (UTF-16LE text, find `vscode-editor-data`, read the JSON object). `isFromEmptySelection:true` confirmed for an empty-selection line copy. |
+| UIA focused element / `IsPassword` | Document `RichEditD2DPT`, available | first query: Pane; after ~1 s: Edit `native-edit-context`; available | Edit `QEditor`, available | Password refusal works where Windows reports it. |
+| UIA selection rectangles | Yes (line box) | Only a 1 px caret rectangle (selection range is degenerate) | Yes (line box) | **Box in Notepad/TeXstudio; ring + label at the caret in VS Code.** Treat rectangles narrower than 3 px as a caret. |
+| Caret: `GetGUIThreadInfo` / MSAA `OBJID_CARET` | Yes / Yes | No / Yes (immediately) | No / No | Fallback order: UIA rects -> MSAA caret -> GUI-thread caret -> mouse. TeXstudio relies on UIA. |
+| Paste replaces the active selection | Yes | Yes | Yes | As designed. |
+| One editor Ctrl+Z restores the original | Yes | Yes | Yes | As designed. |
+| Clipboard restored 0 ms after Ctrl+V | Notepad still pasted the result | **VS Code pasted the restored content** | **TeXstudio pasted the restored content** | Both read the clipboard asynchronously; 25 ms was already enough. Keep the 400 ms default, minimum 50 ms. |
+| Halo window shown without activation (`WS_EX_NOACTIVATE`, show-without-activate) | Focus and selection kept | kept | kept | Use the same styles on the Tauri halo; verify in M2. |
+| Panel takes focus, then `SetForegroundWindow(target)` | Back in 0-3 ms, same focused control, re-copy identical | same | same | Re-copy check is reliable. |
+| Taking the foreground for the panel | Needs the foreground-lock unlock: signed Alt down, signed `vkE8`, Alt up, then `SetForegroundWindow`. A plain Alt tap opened Notepad's menu bar and broke the next copy. | same | same | **The panel uses Alt + mask key before `SetForegroundWindow`.** |
+
+Other observations: the probe's own clipboard writes with the three exclusion formats were
+restored without errors; OLE copies add `DataObject`, `Ole Private Data` and an empty
+`EnterpriseDataProtectionId` format (skipped because it has no data). During the first pass an
+AVG Internet Security window took the foreground for about 28 seconds; it did not recur. A
+security product can interrupt a job; the target check then ends it as `Kept`.
+
+Design changes from M1 (implementation detail, no change to the approved UX): clipboard settle
+wait, caret anchoring for VS Code, Alt + mask key for the panel's foreground, and a minimum restore
+delay of 50 ms.
+
 ### M2 — Foundation (no paid calls)
 
 - **Scope:**
