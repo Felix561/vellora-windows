@@ -4,6 +4,8 @@
 // Wired into the app in M2/M3; until then some items are unused.
 #![allow(dead_code)]
 
+#[cfg(test)]
+pub mod benchmark;
 pub mod commands;
 pub mod geometry;
 pub mod guard;
