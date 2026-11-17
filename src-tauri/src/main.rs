@@ -178,6 +178,7 @@ fn save_settings(
     settings::save_settings(&settings).map_err(to_string)?;
     *current = settings.clone();
     drop(current);
+    text_assist::runtime::apply_settings(&settings);
     let _ = app.emit("settings-changed", &settings);
     Ok(settings)
 }
@@ -449,7 +450,16 @@ fn main() {
             );
             set_health(app.handle(), &state, StartupPhase::InitializingHotkey, None);
             match start_hotkey_worker(app.handle().clone(), state.clone()) {
-                Ok(()) => set_health(app.handle(), &state, StartupPhase::Ready, None),
+                Ok(()) => {
+                    set_health(app.handle(), &state, StartupPhase::Ready, None);
+                    // Text Assist shares the keyboard hook; a failure here leaves dictation intact.
+                    let settings_state = state.clone();
+                    if let Err(err) = text_assist::runtime::start(app.handle().clone(), move || {
+                        settings_state.settings.lock().unwrap().clone()
+                    }) {
+                        eprintln!("Text Assist is unavailable: {err:#}");
+                    }
+                }
                 Err(err) => {
                     set_health(app.handle(), &state, StartupPhase::Degraded, None);
                     record_diagnostic(app.handle(), &state, diagnostic_from_error(DiagnosticCode::HotkeyStateMismatch, "Hotkey unavailable", "Vellora could not register the keyboard shortcut. Restart the app to retry.", &anyhow::anyhow!(err)));
@@ -464,6 +474,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             windows_integration::get_start_at_login,
             windows_integration::set_start_at_login,
+            text_assist::commands::list_text_assist_runs,
+            text_assist::commands::delete_text_assist_run,
+            text_assist::commands::clear_text_assist_runs,
+            text_assist::commands::copy_text_assist_text,
+            text_assist::commands::get_text_assist_overview,
             get_settings,
             save_settings,
             has_openai_api_key,
