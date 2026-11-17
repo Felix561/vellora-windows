@@ -7,7 +7,10 @@
 // Wired into the Text Assist job runner in M2/M3; until then some items are unused.
 #![allow(dead_code)]
 
+pub mod catalog;
+pub mod http;
 pub mod offline;
+pub mod openai;
 
 use std::{
     future::Future,
