@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_FAVORITES,
   addFavorite,
+  addProfileMember,
+  parseEnsembleLimit,
+  profileIdFromName,
+  setMemberEffort,
+  validateProfileDraft,
   colorKey,
   endpointIdFromName,
   endpointsPatch,
@@ -26,7 +31,7 @@ import {
   validateBaseUrl,
   validateEndpointDraft,
 } from "../../src/lib/textAssist";
-import type { CompatEndpoint, ModelRef } from "../../src/lib/types";
+import type { CompatEndpoint, EnsembleProfile, ModelRef } from "../../src/lib/types";
 import { textAssistOverview, textAssistSettings, textModel, textProviderKeys } from "./fixtures";
 
 const catalog = textAssistOverview().models;
@@ -165,10 +170,76 @@ describe("favorites", () => {
     expect(endpointsPatch(assist, [{ ...ollama, models: ["llama3.2"] }])).toEqual({
       openaiCompatible: [{ ...ollama, models: ["llama3.2"] }],
       favoriteModels: [luna],
+      ensembleProfiles: [],
       modelColors: { "openai/gpt-6-luna": "#abcdef" },
     });
     expect(endpointsPatch(assist, [ollama]).favoriteModels).toEqual([luna, local]);
     expect(endpointsPatch(assist, []).favoriteModels).toEqual([luna]);
+  });
+
+  it("drops ensemble members of removed endpoint models and profiles left empty", () => {
+    const local: ModelRef = { provider: "openai_compatible", model: "qwen3:8b", endpoint: "ollama" };
+    const assist = textAssistSettings({
+      openaiCompatible: [ollama],
+      ensembleProfiles: [
+        { id: "mixed", name: "Mixed", members: [luna, local] },
+        { id: "local", name: "Local", members: [local] },
+      ],
+      modelColors: { "openai_compatible/qwen3:8b": "#123456" },
+    });
+    const patch = endpointsPatch(assist, []);
+    expect(patch.ensembleProfiles).toEqual([{ id: "mixed", name: "Mixed", members: [luna] }]);
+    expect(patch.modelColors).toEqual({});
+    expect(endpointsPatch(assist, [ollama]).ensembleProfiles).toEqual(assist.ensembleProfiles);
+  });
+});
+
+describe("ensemble profiles", () => {
+  const profile = (id: string, name: string, members: ModelRef[] = [luna]): EnsembleProfile => ({ id, name, members });
+
+  it("derives unique ids from names", () => {
+    expect(profileIdFromName("Deep academic")).toBe("deep-academic");
+    expect(profileIdFromName("Deep academic", ["deep-academic"])).toBe("deep-academic-2");
+    expect(profileIdFromName("!!!")).toBe("profile");
+  });
+
+  it("validates names, member counts, duplicates and the profile limit", () => {
+    const existing = [profile("fast", "Fast")];
+    expect(validateProfileDraft({ name: "  Deep  ", members: [luna, { ...luna, effort: "medium" }] }, existing, null)).toEqual({
+      profile: { id: "deep", name: "Deep", members: [luna, { ...luna, effort: "medium" }] },
+      errors: null,
+    });
+    expect(validateProfileDraft({ name: "", members: [] }, existing, null).errors).toEqual({ name: "Enter a name.", members: "Add at least one model." });
+    expect(validateProfileDraft({ name: "x".repeat(41), members: [luna] }, existing, null).errors?.name).toBe("Use at most 40 characters.");
+    expect(validateProfileDraft({ name: "FAST", members: [luna] }, existing, null).errors?.name).toBe("Another profile already uses this name.");
+    // Renaming keeps the fixed id; its own name does not count as a duplicate.
+    expect(validateProfileDraft({ name: "Fast", members: [haiku] }, existing, "fast").profile).toEqual(profile("fast", "Fast", [haiku]));
+    expect(validateProfileDraft({ name: "Big", members: Array.from({ length: 10 }, (_, i) => ({ provider: "openai", model: `m${i}` }) as ModelRef) }, existing, null).errors?.members)
+      .toBe("Use at most 9 models.");
+    expect(validateProfileDraft({ name: "Dup", members: [luna, { ...luna }] }, existing, null).errors?.members).toBe("Each model and effort can appear only once.");
+    const twenty = Array.from({ length: 20 }, (_, i) => profile(`p${i}`, `P${i}`));
+    expect(validateProfileDraft({ name: "New", members: [luna] }, twenty, null).errors?.name).toBe("Vellora supports at most 20 ensemble profiles.");
+    expect(validateProfileDraft({ name: "P0 renamed", members: [luna] }, twenty, "p0").profile?.id).toBe("p0");
+  });
+
+  it("adds members and changes efforts within the model offer", () => {
+    expect(addProfileMember([luna], { ...luna, effort: "low" })).toEqual({ members: [luna, { ...luna, effort: "low" }], error: null });
+    expect(addProfileMember([luna], { ...luna }).error).toBe("This model and effort is already in the profile.");
+    const nine = Array.from({ length: 9 }, (_, i) => ({ provider: "openai", model: `m${i}` }) as ModelRef);
+    expect(addProfileMember(nine, luna).error).toBe("A profile has at most 9 models.");
+    const lunaModel = catalog.find((model) => model.id === "gpt-6-luna") ?? null;
+    expect(setMemberEffort([luna], 0, "medium", lunaModel)).toEqual({ members: [{ ...luna, effort: "medium" }], error: null });
+    expect(setMemberEffort([luna], 0, "high", lunaModel).error).toBe("This model does not offer that effort.");
+    expect(setMemberEffort([luna, { ...luna, effort: "low" }], 1, "none", lunaModel).error).toBe("This model and effort is already in the profile.");
+  });
+
+  it("parses the ensemble cost limit", () => {
+    expect(parseEnsembleLimit("0.05")).toEqual({ value: 0.05, error: null });
+    expect(parseEnsembleLimit("$0.10")).toEqual({ value: 0.1, error: null });
+    expect(parseEnsembleLimit("0")).toEqual({ value: 0, error: null });
+    expect(parseEnsembleLimit("5.01").error).toBe("Enter an amount between $0 and $5.");
+    expect(parseEnsembleLimit("").error).not.toBeNull();
+    expect(parseEnsembleLimit("abc").error).not.toBeNull();
   });
 });
 

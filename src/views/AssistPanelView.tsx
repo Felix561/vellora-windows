@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { AlertTriangle, Loader2, X } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { useAppearance } from "../lib/appearance";
 import {
   PANEL_OPEN_EVENT,
@@ -24,15 +24,18 @@ import {
   resultKey,
   safeColor,
   targetAppName,
+  cardKeyRange,
   CUSTOM_INSTRUCTION_MAX_CHARS,
+  type EnsemblePreview,
   type PanelInit,
   type PanelResult,
 } from "../lib/assistPanel";
-import { wordDiff } from "../lib/wordDiff";
+import { wordDiff, type DiffPart } from "../lib/wordDiff";
+import { cardCount, finishedCount, useEnsemble, type PreviewState } from "../lib/assistEnsemble";
+import { EnsembleCards, EnsemblePreviewView, ProfileChips, ResultText, WarningList } from "./AssistEnsembleView";
 import "./assist-panel.css";
 
 const NOTICE_MS = 2500;
-const ENSEMBLE_NOTICE = "Ensemble arrives in a later update";
 
 type PanelStyle = CSSProperties & Record<`--${string}`, string>;
 
@@ -76,6 +79,8 @@ export function AssistPanelView() {
   const inputRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const noticeId = useRef(0);
+  const ensemble = useEnsemble(sessionRef);
+  const { reset: resetEnsemble, handleResult: handleEnsembleResult } = ensemble;
 
   const showNotice = useCallback((text: string) => {
     noticeId.current += 1;
@@ -165,19 +170,22 @@ export function AssistPanelView() {
     setHistory(next.customInstructions);
     setNotice(null);
     setApplying(false);
+    resetEnsemble();
     if (startsCustom && !firstInstruction) {
       setFocusInputToken((token) => token + 1);
       return;
     }
     startRun(next.activePresetId, next.activeModelIndex, false, firstInstruction || undefined);
-  }, [startRun]);
+  }, [startRun, resetEnsemble]);
 
   useEffect(() => {
     let disposed = false;
     const unlistenOpen = listen<unknown>(PANEL_OPEN_EVENT, (event) => applyInit(event.payload));
     const unlistenResult = listen<unknown>(PANEL_RESULT_EVENT, (event) => {
       const result = normalizePanelResult(event.payload);
-      if (!result || result.sessionId !== sessionRef.current || staleRef.current.has(result.requestId)) return;
+      if (!result || result.sessionId !== sessionRef.current) return;
+      // Ensemble members carry a run id and member index; they never touch the single view.
+      if (handleEnsembleResult(result) || staleRef.current.has(result.requestId)) return;
       const key = resultKey(result.presetId, result.modelIndex);
       setResults((current) => ({ ...current, [key]: result }));
     });
@@ -191,7 +199,7 @@ export function AssistPanelView() {
       unlistenOpen.then((unlisten) => unlisten()).catch(console.error);
       unlistenResult.then((unlisten) => unlisten()).catch(console.error);
     };
-  }, [applyInit]);
+  }, [applyInit, handleEnsembleResult]);
 
   useEffect(() => {
     if (focusInputToken > 0) inputRef.current?.focus();
@@ -212,6 +220,21 @@ export function AssistPanelView() {
     () => (showDiff && hasText && result ? wordDiff(init?.original ?? "", result.text) : null),
     [showDiff, hasText, result, init],
   );
+
+  const profiles = useMemo(() => init?.ensembleProfiles ?? [], [init]);
+  const mode = ensemble.mode;
+  const run = ensemble.run;
+  const cards = cardCount(run, ensemble.results);
+  const finished = finishedCount(ensemble.results);
+  const selectedCard = ensemble.results[ensemble.selected] ?? null;
+  const cardHasText = !!selectedCard && selectedCard.text.length > 0 && (selectedCard.phase === "streaming" || selectedCard.phase === "done");
+  const cardDiff = useMemo(
+    () => (mode === "cards" && ensemble.showDiff && cardHasText && selectedCard ? wordDiff(init?.original ?? "", selectedCard.text) : null),
+    [mode, ensemble.showDiff, cardHasText, selectedCard, init],
+  );
+  const preview = ensemble.preview;
+  const previewReady = preview?.status === "ready" && preview.profileId === ensemble.profileId ? preview.preview : null;
+  const runnable = !!previewReady && !previewReady.blocked && previewReady.members.length > 0 && !applying;
 
   const selectPreset = (id: string) => {
     if (applying || !presets.some((preset) => preset.id === id)) return;
@@ -244,25 +267,59 @@ export function AssistPanelView() {
     startRun(presetId, modelIndex, true);
   };
 
-  const apply = () => {
-    if (!applicable || !result) return false;
+  const applyResult = (target: PanelResult | null) => {
+    if (applying || !canApply(target) || !target) return false;
     setApplying(true);
-    panelApply(result.requestId).catch((error: unknown) => {
+    panelApply(target.requestId).catch((error: unknown) => {
       setApplying(false);
       showNotice(`Could not apply: ${errorMessage(error)}`);
     });
     return true;
   };
 
-  const copy = () => {
-    if (!canApply(result) || !result) return;
-    panelCopy(result.requestId)
+  const copyResult = (target: PanelResult | null) => {
+    if (!canApply(target) || !target) return;
+    panelCopy(target.requestId)
       .then(() => showNotice("Copied"))
       .catch((error: unknown) => showNotice(`Could not copy: ${errorMessage(error)}`));
   };
 
+  const apply = () => applyResult(result);
+
   const close = () => {
     panelClose().catch(console.error);
+  };
+
+  const openEnsemble = () => {
+    if (applying) return;
+    if (profiles.length === 0) {
+      showNotice("No ensemble models yet. Add favorites or a profile under Models, Text models.");
+      return;
+    }
+    let instruction: string | null = null;
+    if (custom) {
+      instruction = lastCustom;
+      if (!instruction) {
+        showNotice("Run a custom instruction first, then press E");
+        setFocusInputToken((token) => token + 1);
+        return;
+      }
+    }
+    ensemble.open(profiles, presetId, instruction);
+  };
+
+  const confirmEnsemble = () => {
+    if (!runnable) return false;
+    return ensemble.confirm(profiles);
+  };
+
+  const backToSingle = () => {
+    ensemble.setMode("single");
+    window.requestAnimationFrame(() => bodyRef.current?.focus());
+  };
+
+  const selectCard = (index: number) => {
+    if (index >= 0 && index < cards) ensemble.setSelected(index);
   };
 
   const runCustom = () => {
@@ -294,7 +351,9 @@ export function AssistPanelView() {
     if (!init || event.isComposing) return;
     if (event.key === "Escape") {
       event.preventDefault();
-      close();
+      // Preview and cards return to the single result first; Esc there closes.
+      if (mode !== "single") backToSingle();
+      else close();
       return;
     }
     const target = event.target as HTMLElement | null;
@@ -305,10 +364,19 @@ export function AssistPanelView() {
       // A text selection inside the panel uses the native copy.
       if ((window.getSelection()?.toString() ?? "").length > 0) return;
       event.preventDefault();
-      copy();
+      if (mode === "single") copyResult(result);
+      else if (mode === "cards") copyResult(selectedCard);
       return;
     }
     if (event.ctrlKey || event.altKey || event.metaKey) return;
+    if (mode === "preview") {
+      onPreviewKey(event, lower);
+      return;
+    }
+    if (mode === "cards") {
+      onCardsKey(event, lower);
+      return;
+    }
     if (event.key === "Tab") {
       event.preventDefault();
       switchModel(event.shiftKey ? -1 : 1);
@@ -335,7 +403,50 @@ export function AssistPanelView() {
       setShowDiff((current) => !current);
     } else if (lower === "e") {
       event.preventDefault();
-      showNotice(ENSEMBLE_NOTICE);
+      openEnsemble();
+    }
+  };
+
+  const onPreviewKey = (event: KeyboardEvent, lower: string) => {
+    if (/^[1-9]$/.test(event.key)) {
+      const profile = profiles[Number(event.key) - 1];
+      if (profile) {
+        event.preventDefault();
+        if (profile.id !== ensemble.profileId) ensemble.selectProfile(profile.id);
+      }
+      return;
+    }
+    if (event.key === "Enter" || (lower === "e" && !event.shiftKey)) {
+      event.preventDefault();
+      confirmEnsemble();
+    }
+  };
+
+  const onCardsKey = (event: KeyboardEvent, lower: string) => {
+    if (/^[1-9]$/.test(event.key)) {
+      const index = Number(event.key) - 1;
+      if (index < cards) {
+        event.preventDefault();
+        selectCard(index);
+      }
+      return;
+    }
+    if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+      event.preventDefault();
+      selectCard(ensemble.selected + (event.key === "ArrowRight" ? 1 : -1));
+      return;
+    }
+    if (event.key === "Enter") {
+      if (applyResult(selectedCard)) event.preventDefault();
+      return;
+    }
+    if (event.shiftKey) return;
+    if (lower === "d") {
+      event.preventDefault();
+      ensemble.setShowDiff((current) => !current);
+    } else if (lower === "r") {
+      event.preventDefault();
+      ensemble.rerun();
     }
   };
 
@@ -359,17 +470,129 @@ export function AssistPanelView() {
   const meta = [billing, cost, duration].filter(Boolean).join(" · ");
   const appName = targetAppName(init?.targetApp ?? null);
   const warnings = result && (result.phase === "done" || result.phase === "streaming") ? friendlyWarnings(result.warnings) : [];
-  const status = statusText(phase, result, awaitingInstruction, applying);
+  const status = mode === "preview"
+    ? previewStatusText(preview, previewReady)
+    : mode === "cards"
+      ? cardsStatusText(run?.error ?? null, finished, cards, ensemble.selected, selectedCard, applying)
+      : statusText(phase, result, awaitingInstruction, applying);
+  const presetName = (id: string | undefined) => presets.find((preset) => preset.id === id)?.name ?? "";
 
-  return (
-    <main className="ap-root" aria-label="Rewrite panel" style={style}>
-      <div className="ap-card">
-        {!init ? (
-          <div className="ap-loading" role="status">
-            <Loader2 className="ap-spin" size={16} aria-hidden="true" />
-            Waiting for the selection…
+  const closeButton = (
+    <button type="button" className="ap-close" aria-label="Close" aria-keyshortcuts="Escape" title="Close (Esc)" onClick={close}>
+      <X size={14} aria-hidden="true" />
+    </button>
+  );
+  const liveRegion = (
+    <div className="ap-sr-only" role="status" aria-live="polite">
+      {notice?.text ?? status}
+    </div>
+  );
+  const noticeText = notice && <span className="ap-notice" aria-hidden="true">{notice.text}</span>;
+
+  let content;
+  if (!init) {
+    content = (
+      <div className="ap-loading" role="status">
+        <Loader2 className="ap-spin" size={16} aria-hidden="true" />
+        Waiting for the selection…
+      </div>
+    );
+  } else if (mode === "preview") {
+    const memberCount = previewReady?.members.length ?? 0;
+    content = (
+      <>
+        <div className="ap-topline">
+          <h1 className="ap-ens-title">
+            <span className="ap-ens-badge">Ensemble</span>
+            <span className="ap-ens-sub">{presetName(presetId)}</span>
+          </h1>
+          {closeButton}
+        </div>
+        {profiles.length > 1 && (
+          <ProfileChips profiles={profiles} profileId={ensemble.profileId} disabled={applying} onSelect={ensemble.selectProfile} />
+        )}
+        <div
+          ref={bodyRef}
+          className="ap-body"
+          role="region"
+          aria-label="Ensemble preview"
+          aria-busy={preview?.status === "loading"}
+          tabIndex={0}
+        >
+          <EnsemblePreviewView state={preview} />
+        </div>
+        {liveRegion}
+        <footer className="ap-footer">
+          {profiles.length > 1 && <span className="ap-hint"><kbd>{presetKeyRange(profiles.length)}</kbd> profile</span>}
+          {!previewReady?.blocked && (
+            <button type="button" className="ap-hint" onClick={confirmEnsemble} disabled={!runnable} aria-keyshortcuts="Enter E">
+              <kbd>Enter</kbd> run {memberCount > 0 ? `${memberCount} model${memberCount === 1 ? "" : "s"}` : "ensemble"}
+            </button>
+          )}
+          <button type="button" className="ap-hint" onClick={backToSingle} aria-keyshortcuts="Escape">
+            <kbd>Esc</kbd> back
+          </button>
+          {noticeText}
+        </footer>
+      </>
+    );
+  } else if (mode === "cards" && run) {
+    content = (
+      <>
+        <div className="ap-topline">
+          <h1 className="ap-ens-title">
+            <span className="ap-ens-badge">Ensemble · {finished} / {cards}</span>
+            <span className="ap-ens-sub">{[presetName(run.presetId), run.profileName].filter(Boolean).join(" · ")}</span>
+          </h1>
+          {closeButton}
+        </div>
+        {run.error ? (
+          <div ref={bodyRef} className="ap-body" role="region" aria-label="Ensemble" tabIndex={0}>
+            <div className="ap-failed">
+              <strong>Could not start the ensemble</strong>
+              <span>{run.error}</span>
+              <span className="ap-retry">Press R to try again or Esc to go back.</span>
+            </div>
           </div>
         ) : (
+          <EnsembleCards
+            members={run.members}
+            count={cards}
+            results={ensemble.results}
+            selected={ensemble.selected}
+            showDiff={ensemble.showDiff}
+            diff={cardDiff}
+            disabled={applying}
+            onSelect={selectCard}
+          />
+        )}
+        {liveRegion}
+        <footer className="ap-footer">
+          <span className="ap-hint"><kbd>{cardKeyRange(cards)}</kbd> select</span>
+          <button type="button" className="ap-hint" onClick={() => applyResult(selectedCard)} disabled={!canApply(selectedCard) || applying} aria-keyshortcuts="Enter">
+            <kbd>Enter</kbd> apply
+          </button>
+          <button
+            type="button"
+            className="ap-hint"
+            onClick={() => ensemble.setShowDiff((current) => !current)}
+            aria-pressed={ensemble.showDiff}
+            aria-keyshortcuts="D"
+          >
+            <kbd>D</kbd> diff
+          </button>
+          <button type="button" className="ap-hint" onClick={() => ensemble.rerun()} disabled={applying} aria-keyshortcuts="R">
+            <kbd>R</kbd> again
+          </button>
+          <button type="button" className="ap-hint" onClick={backToSingle} aria-keyshortcuts="Escape">
+            <kbd>Esc</kbd> back
+          </button>
+          {noticeText}
+        </footer>
+      </>
+    );
+  } else {
+    content = (
           <>
             <div className="ap-topline">
               <div className="ap-chips" role="toolbar" aria-label="Rewrite style">
@@ -386,9 +609,7 @@ export function AssistPanelView() {
                   </button>
                 ))}
               </div>
-              <button type="button" className="ap-close" aria-label="Close" aria-keyshortcuts="Escape" title="Close (Esc)" onClick={close}>
-                <X size={14} aria-hidden="true" />
-              </button>
+              {closeButton}
             </div>
 
             {custom && (
@@ -440,20 +661,9 @@ export function AssistPanelView() {
               />
             </div>
 
-            {warnings.length > 0 && (
-              <ul className="ap-warnings" aria-label="Warnings">
-                {warnings.map((warning) => (
-                  <li key={warning}>
-                    <AlertTriangle size={12} aria-hidden="true" />
-                    {warning}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <WarningList warnings={warnings} />
 
-            <div className="ap-sr-only" role="status" aria-live="polite">
-              {notice?.text ?? status}
-            </div>
+            {liveRegion}
 
             <footer className="ap-footer">
               <span className="ap-hint"><kbd>{presetKeyRange(presets.length)}</kbd> preset</span>
@@ -475,16 +685,41 @@ export function AssistPanelView() {
               <button type="button" className="ap-hint" onClick={() => apply()} disabled={!applicable} aria-keyshortcuts="Enter">
                 <kbd>Enter</kbd> apply
               </button>
+              <button type="button" className="ap-hint" onClick={openEnsemble} disabled={applying || profiles.length === 0} aria-keyshortcuts="E">
+                <kbd>E</kbd> ensemble
+              </button>
               <button type="button" className="ap-hint" onClick={close} aria-keyshortcuts="Escape">
                 <kbd>Esc</kbd> close
               </button>
-              {notice && <span className="ap-notice" aria-hidden="true">{notice.text}</span>}
+              {noticeText}
             </footer>
           </>
-        )}
-      </div>
+    );
+  }
+
+  return (
+    <main className="ap-root" aria-label="Rewrite panel" style={style} data-mode={mode}>
+      <div className="ap-card">{content}</div>
     </main>
   );
+}
+
+function previewStatusText(preview: PreviewState | null, ready: EnsemblePreview | null) {
+  if (!preview || preview.status === "loading") return "Estimating the ensemble cost";
+  if (preview.status === "error") return `Ensemble unavailable: ${preview.error}`;
+  if (!ready) return "";
+  if (ready.blocked) return "Over the cost limit. This ensemble cannot run.";
+  return `Press Enter to run ${ready.members.length} models`;
+}
+
+function cardsStatusText(error: string | null, finished: number, count: number, selected: number, card: PanelResult | null, applying: boolean) {
+  if (applying) return "Applying";
+  if (error) return `Could not start the ensemble: ${error}`;
+  const phase = card?.phase ?? "thinking";
+  const selectedText = phase === "done"
+    ? canApply(card) ? "done, press Enter to apply" : "done, but empty"
+    : phase === "failed" ? `failed: ${card?.error || "request failed"}` : phase === "streaming" ? "writing" : phase;
+  return `${finished} of ${count} finished. Card ${selected + 1} ${selectedText}`;
 }
 
 function statusText(phase: PanelResult["phase"] | null, result: PanelResult | null, awaiting: boolean, applying: boolean) {
@@ -512,7 +747,7 @@ type BodyProps = {
   hasText: boolean;
   awaitingInstruction: boolean;
   showDiff: boolean;
-  diff: ReturnType<typeof wordDiff>;
+  diff: DiffPart[] | null;
 };
 
 function Body({ phase, result, hasText, awaitingInstruction, showDiff, diff }: BodyProps) {
@@ -540,29 +775,14 @@ function Body({ phase, result, hasText, awaitingInstruction, showDiff, diff }: B
       </div>
     );
   }
-  if (showDiff) {
-    if (!diff) {
-      return (
-        <>
-          <p className="ap-placeholder">Too long for a word diff; showing the result.</p>
-          <div className="ap-text">{result.text}</div>
-        </>
-      );
-    }
-    return (
-      <div className="ap-text ap-diff" data-testid="panel-diff">
-        {diff.map((part, index) => {
-          if (part.kind === "added") return <ins key={index} title="Added">{part.text}</ins>;
-          if (part.kind === "removed") return <del key={index} title="Removed">{part.text}</del>;
-          return <span key={index}>{part.text}</span>;
-        })}
-      </div>
-    );
-  }
   return (
-    <div className="ap-text" data-testid="panel-text">
-      {result.text}
-      {phase === "streaming" && <span className="ap-caret" aria-hidden="true" />}
-    </div>
+    <ResultText
+      text={result.text}
+      diff={diff}
+      showDiff={showDiff}
+      streaming={phase === "streaming"}
+      testId="panel-text"
+      diffTestId="panel-diff"
+    />
   );
 }

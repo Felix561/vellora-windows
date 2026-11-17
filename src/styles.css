@@ -1350,6 +1350,14 @@ h3[tabindex="-1"]:focus { outline: none; }
 [data-appearance="classic"] .ta-swatch { border-radius: 0; border: 1px solid #000; }
 [data-appearance="classic"] .ta-models h4 { font-size: 13px; font-weight: 700; }
 [data-appearance="classic"] :is(.ta-effort, .ta-color-hex, .field textarea, .ta-color-picker):focus-visible { outline: 1px dotted #000; outline-offset: -5px; }
+.ta-profile-members { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--ink-soft); }
+.ta-profile-members li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.ta-profile-members .ta-swatch { width: 10px; height: 10px; }
+.ta-profile-form { max-width: 720px; }
+.ta-profile-subhead { margin: 16px 0 0; color: var(--ink-soft); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.ta-ensemble-limit { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+[data-appearance="classic"] .ta-ensemble-limit { border-top: 2px groove #eee; }
+[data-appearance="classic"] .ta-profile-subhead { letter-spacing: 0; text-transform: none; font-weight: 700; }
 @media (max-width: 620px) {
   .ta-add-favorite { grid-template-columns: minmax(0, 1fr); }
   .ta-favorite-actions { flex: 1 1 100%; }

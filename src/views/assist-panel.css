@@ -398,6 +398,198 @@ button.ap-hint[aria-pressed="true"] {
   font-weight: 600;
 }
 
+/* Ensemble (E): title, profile picker, preview and cards (concept scene C). */
+.ap-ens-title {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  margin: 0;
+  font: inherit;
+  font-weight: 650;
+}
+
+.ap-ens-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.ap-ens-sub {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ap-profile-chips {
+  flex: none;
+  padding: 8px 12px 0;
+}
+
+.ap-chip:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.ap-preview {
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.ap-members {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ap-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--model-color);
+  border-radius: 6px;
+  background: var(--paper-raised);
+  font-weight: 600;
+}
+
+.ap-preview-line,
+.ap-preview-note {
+  margin: 0;
+  color: var(--ink);
+}
+
+.ap-preview-label {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.ap-preview-limit,
+.ap-preview-note {
+  color: var(--ink-soft);
+}
+
+.ap-blocked {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--ap-warn-line);
+  border-radius: 6px;
+  background: var(--ap-warn-bg);
+  color: var(--ap-warn-ink);
+}
+
+.ap-cards {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(var(--ap-cols, 3), minmax(0, 1fr));
+  grid-auto-rows: minmax(150px, 1fr);
+  gap: 8px;
+  min-height: 0;
+  padding: 8px 10px 2px;
+  overflow: auto;
+}
+
+.ap-ens-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--model-color);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: 0 4px 12px rgba(40, 30, 15, 0.14);
+  animation: ap-pop 0.25s ease-out both;
+}
+
+.ap-ens-card.on {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+.ap-ens-card[data-phase="failed"] {
+  border-top-color: var(--danger);
+}
+
+.ap-ens-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 7px 10px 2px;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.ap-ens-num {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 10px;
+}
+
+.ap-ens-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 0 10px;
+  color: var(--ink-soft);
+  font-size: 10.5px;
+}
+
+.ap-ens-meta .ap-meta {
+  margin-left: 0;
+}
+
+.ap-ens-phase-failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ap-ens-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 4px 4px 0;
+  padding: 2px 6px 8px;
+  overflow: auto;
+  border-radius: 6px;
+}
+
+.ap-ens-body .ap-text {
+  font-size: 11.5px;
+}
+
+.ap-ens-card .ap-warnings {
+  padding: 4px 8px 6px;
+}
+
 /* Classic appearance: Windows 95/98 look, square edges. */
 [data-appearance="classic"] .ap-root {
   --ap-chip-bg: #c0c0c0;
@@ -477,9 +669,57 @@ button.ap-hint[aria-pressed="true"] {
   background: #c0c0c0;
 }
 
+[data-appearance="classic"] .ap-ens-badge {
+  border-radius: 0;
+  background: #000080;
+  color: #fff;
+}
+
+[data-appearance="classic"] :is(.ap-member, .ap-blocked) {
+  border: 2px groove #eee;
+  border-left: 4px solid var(--model-color);
+  border-radius: 0;
+  background: #dfdfdf;
+}
+
+[data-appearance="classic"] .ap-blocked {
+  border-left-color: #808080;
+  background: var(--ap-warn-bg);
+}
+
+[data-appearance="classic"] .ap-ens-card {
+  border: 2px outset #eee;
+  border-top: 4px solid var(--model-color);
+  border-radius: 0;
+  background: #c0c0c0;
+  box-shadow: none;
+}
+
+[data-appearance="classic"] .ap-ens-card.on {
+  border-style: inset;
+  outline: 1px dotted #000;
+  outline-offset: -5px;
+}
+
+[data-appearance="classic"] :is(.ap-ens-num, .ap-ens-head) {
+  border-radius: 0;
+}
+
+[data-appearance="classic"] .ap-ens-num {
+  background: #000080;
+  color: #fff;
+}
+
+[data-appearance="classic"] .ap-ens-body {
+  border: 2px inset #eee;
+  border-radius: 0;
+  background: #fff;
+}
+
 /* Reduced motion: no pop, spin or blinking caret. */
 @media (prefers-reduced-motion: reduce) {
   .ap-card,
+  .ap-ens-card,
   .ap-spin,
   .ap-caret {
     animation: none;

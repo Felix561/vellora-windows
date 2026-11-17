@@ -363,3 +363,120 @@ describe("model colors", () => {
     expect(screen.queryByRole("button", { name: "Reset color for GPT-6 Luna" })).not.toBeInTheDocument();
   });
 });
+
+describe("ensemble profiles", () => {
+  function profilesSection() {
+    return screen.getByRole("heading", { name: "Ensemble profiles" }).closest("section") as HTMLElement;
+  }
+
+  it("explains the Favorites fallback, validates and adds a profile", async () => {
+    const { user, onChange } = await openTextModels();
+    const section = profilesSection();
+    expect(within(section).getByText(/uses one profile called "Favorites"/)).toBeInTheDocument();
+    await user.click(within(section).getByRole("button", { name: "Add profile" }));
+    const form = within(section).getByRole("form", { name: "Add an ensemble profile" });
+    expect(within(form).getByLabelText("Name")).toHaveFocus();
+
+    await user.click(within(form).getByRole("button", { name: "Add profile" }));
+    expect(within(form).getByText("Enter a name.")).toBeInTheDocument();
+    expect(within(form).getByRole("alert")).toHaveTextContent("Add at least one model.");
+    expect(onChange).not.toHaveBeenCalled();
+
+    await user.type(within(form).getByLabelText("Name"), "Deep academic");
+    expect(within(form).getByText(/ID deep-academic, derived from the name\./)).toBeInTheDocument();
+    const picker = within(form).getByRole("group", { name: "Add a model to the profile" });
+    const model = within(picker).getByLabelText("Model");
+    const effort = within(picker).getByLabelText("Effort");
+    await user.selectOptions(model, within(model).getByRole("option", { name: /^GPT-6 Luna/ }));
+    expect(within(effort).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["none", "low", "medium"]);
+    await user.selectOptions(effort, "low");
+    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    // The same model again with another effort is allowed; the same effort twice is not.
+    await user.selectOptions(effort, "medium");
+    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    expect(within(form).getByRole("alert")).toHaveTextContent("This model and effort is already in the profile.");
+    await user.selectOptions(model, within(model).getByRole("option", { name: /^Gemini 3\.1 Flash-Lite/ }));
+    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    await user.click(within(form).getByRole("button", { name: "Move Gemini 3.1 Flash-Lite, Medium up" }));
+    await waitFor(() => expect(within(form).getByRole("button", { name: "Move Gemini 3.1 Flash-Lite, Medium up" })).toHaveFocus());
+
+    await user.click(within(form).getByRole("button", { name: "Add profile" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(lastAssist(onChange).ensembleProfiles).toEqual([{
+      id: "deep-academic",
+      name: "Deep academic",
+      members: [
+        { ...luna, effort: "low" },
+        { provider: "gemini", model: "gemini-3.1-flash-lite", effort: "medium" },
+        { ...luna, effort: "medium" },
+      ],
+    }]);
+    expect(await within(section).findByText("Deep academic added.")).toBeInTheDocument();
+    const list = within(section).getByRole("list", { name: "Ensemble profiles" });
+    expect(within(list).getByText("3 models")).toBeInTheDocument();
+    expect(within(list).getByRole("list", { name: "Models in Deep academic" })).toHaveTextContent("GPT-6 Luna · Low");
+  });
+
+  it("edits a profile with a fixed id and removes it after confirmation", async () => {
+    const haiku: ModelRef = { provider: "anthropic", model: "claude-haiku-5-5", effort: "none" };
+    const { user, onChange } = await openTextModels({
+      ensembleProfiles: [{ id: "fast", name: "Fast", members: [luna] }, { id: "other", name: "Other", members: [luna] }],
+    });
+    const section = profilesSection();
+    expect(within(section).queryByText(/uses one profile called "Favorites"/)).not.toBeInTheDocument();
+    await user.click(within(section).getByRole("button", { name: "Edit Fast" }));
+    const form = within(section).getByRole("form", { name: "Edit Fast" });
+    expect(within(form).getByText(/ID fast \(fixed\)\./)).toBeInTheDocument();
+    const name = within(form).getByLabelText("Name");
+    await user.clear(name);
+    await user.type(name, "other");
+    await user.click(within(form).getByRole("button", { name: "Remove GPT-6 Luna, None from the profile" }));
+    await user.click(within(form).getByRole("button", { name: "Save profile" }));
+    expect(within(form).getByText("Another profile already uses this name.")).toBeInTheDocument();
+    expect(within(form).getByRole("alert")).toHaveTextContent("Add at least one model.");
+    expect(onChange).not.toHaveBeenCalled();
+
+    await user.clear(name);
+    await user.type(name, "Quick");
+    const picker = within(form).getByRole("group", { name: "Add a model to the profile" });
+    const model = within(picker).getByLabelText("Model");
+    await user.selectOptions(model, within(model).getByRole("option", { name: /^Claude Haiku/ }));
+    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    await user.selectOptions(model, within(model).getByRole("option", { name: /^GPT-6 Luna/ }));
+    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    await user.selectOptions(within(form).getByRole("combobox", { name: "Effort for GPT-6 Luna, None" }), "medium");
+    await user.click(within(form).getByRole("button", { name: "Save profile" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(lastAssist(onChange).ensembleProfiles).toEqual([
+      { id: "fast", name: "Quick", members: [haiku, { ...luna, effort: "medium" }] },
+      { id: "other", name: "Other", members: [luna] },
+    ]);
+
+    await user.click(await within(section).findByRole("button", { name: "Remove Quick" }));
+    const confirm = within(section).getByRole("group", { name: "Confirm removing Quick" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove profile" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    expect(lastAssist(onChange).ensembleProfiles).toEqual([{ id: "other", name: "Other", members: [luna] }]);
+    expect(await within(section).findByText("Quick removed.")).toBeInTheDocument();
+  });
+
+  it("disables adding at twenty profiles and saves the cost limit", async () => {
+    const many = Array.from({ length: 20 }, (_, index) => ({ id: `p${index}`, name: `P${index}`, members: [luna] }));
+    const { user, onChange } = await openTextModels({ ensembleProfiles: many });
+    const section = profilesSection();
+    expect(within(section).getByRole("button", { name: "Add profile" })).toBeDisabled();
+    expect(within(section).getByText(/at most 20 profiles/)).toBeInTheDocument();
+
+    const limit = within(section).getByLabelText("Cost limit per ensemble run (USD)");
+    expect(limit).toHaveValue(0.05);
+    await user.clear(limit);
+    await user.type(limit, "7");
+    expect(limit).toHaveAccessibleDescription("Enter an amount between $0 and $5.");
+    expect(within(section).getByRole("button", { name: "Save limit" })).toBeDisabled();
+    await user.clear(limit);
+    await user.type(limit, "0.1{Enter}");
+    await waitFor(() => expect(lastAssist(onChange).limits.ensembleMaxUsdPerRun).toBe(0.1));
+    expect(lastAssist(onChange).limits.quickMaxChars).toBe(8000);
+  });
+});

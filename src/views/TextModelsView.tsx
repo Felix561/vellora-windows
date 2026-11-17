@@ -1,11 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { deleteTextProviderKey, saveTextProviderKey } from "../lib/api";
+import { EnsembleProfilesSection, ModelOptions } from "./EnsembleProfilesSection";
 import {
   MAX_ENDPOINTS,
   MAX_FAVORITES,
   addFavorite,
-  catalogOptionLabel,
   colorKey,
   defaultModelColor,
   effortForModel,
@@ -14,7 +14,6 @@ import {
   endpointsPatch,
   favoriteName,
   findCatalogModel,
-  groupCatalogModels,
   isHexColor,
   isLocalBaseUrl,
   modelColorFor,
@@ -53,7 +52,7 @@ type Props = {
   onSettingsChange: SettingsChange;
 };
 
-type Section = "endpoints" | "favorites" | "colors";
+type Section = "endpoints" | "favorites" | "profiles" | "colors";
 type Feedback = { text: string; error: boolean };
 type SectionFeedback = Feedback & { section: Section };
 type Save = (section: Section, patch: Partial<TextAssistSettings>, success: string) => Promise<boolean>;
@@ -105,6 +104,8 @@ export function TextModelsView({ settings, onSettingsChange }: Props) {
         feedback={feedbackFor("endpoints")} onKeysChanged={() => void reloadKeys()} />
       <Favorites assist={assist} catalog={catalog} loading={!overview && !modelsError} keys={keys} busy={busy}
         save={save} report={report} feedback={feedbackFor("favorites")} />
+      <EnsembleProfilesSection assist={assist} catalog={catalog} loading={!overview && !modelsError} keys={keys} busy={busy}
+        save={(patch, success) => save("profiles", patch, success)} feedback={feedbackFor("profiles")} />
       <ModelColors assist={assist} catalog={catalog} busy={busy} save={save} report={report} feedback={feedbackFor("colors")} />
     </div>
   );
@@ -272,7 +273,9 @@ function Endpoints({ assist, keys, busy, save, report, feedback, onKeysChanged }
     const next = editingId ? endpoints.map((item) => (item.id === editingId ? endpoint : item)) : [...endpoints, endpoint];
     const patch = endpointsPatch(assist, next);
     const dropped = assist.favoriteModels.length - patch.favoriteModels.length;
-    const note = dropped > 0 ? ` ${dropped} favorite${dropped === 1 ? "" : "s"} for removed models ${dropped === 1 ? "was" : "were"} removed.` : "";
+    const droppedProfiles = assist.ensembleProfiles.length - patch.ensembleProfiles.length;
+    const note = (dropped > 0 ? ` ${dropped} favorite${dropped === 1 ? "" : "s"} for removed models ${dropped === 1 ? "was" : "were"} removed.` : "")
+      + (droppedProfiles > 0 ? ` ${droppedProfiles} ensemble profile${droppedProfiles === 1 ? "" : "s"} without models ${droppedProfiles === 1 ? "was" : "were"} removed.` : "");
     const ok = await save("endpoints", patch, `${endpoint.name} ${editingId ? "updated" : "added"}.${note}`);
     if (!ok) return false;
     if (key) {
@@ -466,7 +469,6 @@ function Favorites({ assist, catalog, loading, keys, busy, save, report, feedbac
   const ids = useId();
   const favorites = assist.favoriteModels;
   const endpoints = assist.openaiCompatible;
-  const groups = useMemo(() => groupCatalogModels(catalog), [catalog]);
   const [choice, setChoice] = useState("");
   const [effort, setEffort] = useState<Effort | "">("");
   const pendingFocus = useRef<{ index: number; action: "up" | "down" } | null>(null);
@@ -587,22 +589,7 @@ function Favorites({ assist, catalog, loading, keys, busy, save, report, feedbac
           <span>Model</span>
           <select value={choice} disabled={busy || full} onChange={(event) => selectChoice(event.target.value)}>
             <option value="">{loading ? "Loading models..." : "Choose a model"}</option>
-            {groups.map((group) => (
-              <optgroup key={group.provider} label={providerLabel(group.provider)}>
-                {group.models.map((model) => (
-                  <option key={model.id} value={modelOptionValue({ provider: model.provider, model: model.id })}>
-                    {catalogOptionLabel(model, missingKey(model.provider))}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-            {endpoints.filter((endpoint) => endpoint.models.length > 0).map((endpoint) => (
-              <optgroup key={endpoint.id} label={`${endpoint.name} (OpenAI-compatible)`}>
-                {endpoint.models.map((model) => (
-                  <option key={model} value={modelOptionValue({ provider: "openai_compatible", model, endpoint: endpoint.id })}>{model}</option>
-                ))}
-              </optgroup>
-            ))}
+            <ModelOptions catalog={catalog} endpoints={endpoints} keys={keys} />
           </select>
         </label>
         <label className="field">
@@ -646,6 +633,7 @@ function colorEntries(assist: TextAssistSettings, catalog: readonly TextModelInf
   };
   addEntry(assist.quickModel, "Quick Polish");
   for (const ref of assist.favoriteModels) addEntry(ref, "favorite");
+  for (const profile of assist.ensembleProfiles) for (const ref of profile.members) addEntry(ref, "ensemble");
   return [...entries.values()];
 }
 

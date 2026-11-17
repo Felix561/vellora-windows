@@ -10,6 +10,9 @@ export const PANEL_RESULT_EVENT = "text-assist-panel";
 export const CUSTOM_PRESET_ID = "custom";
 /** Number keys 1–9 select presets; later presets are not shown. */
 export const MAX_PANEL_PRESETS = 9;
+/** Number keys 1–9 select ensemble cards (Rust `ENSEMBLE_MAX_MEMBERS`) and preview profiles. */
+export const MAX_ENSEMBLE_MEMBERS = 9;
+export const MAX_PANEL_PROFILES = 9;
 /** Matches the settings limit for remembered custom instructions. */
 export const CUSTOM_INSTRUCTION_MAX_CHARS = 500;
 export const CUSTOM_INSTRUCTION_HISTORY = 5;
@@ -38,6 +41,30 @@ export type PanelInit = {
   activeModelIndex: number;
   customInstructions: string[];
   maxChars: number;
+  /** Ensemble profiles; the backend sends an implicit "Favorites" profile when none are configured. */
+  ensembleProfiles: PanelEnsembleProfile[];
+  /** Per-run cost limit for ensembles in USD. */
+  ensembleMaxUsd: number;
+};
+
+export type PanelEnsembleProfile = { id: string; name: string; members: PanelModel[] };
+
+/** Shown before an ensemble run (Rust `EnsemblePreview`). */
+export type EnsemblePreview = {
+  profileId: string;
+  members: PanelModel[];
+  providers: string[];
+  estimatedUsd: number;
+  /** A paid member has no catalog price; the estimate leaves it out. */
+  unknownCost: boolean;
+  limitUsd: number;
+  blocked: boolean;
+};
+
+export type EnsembleArgs = {
+  profileId: string;
+  presetId: string;
+  customInstruction: string | null;
 };
 
 export type PanelResult = {
@@ -59,6 +86,10 @@ export type PanelResult = {
   warnings: string[];
   /** Short error label. */
   error: string | null;
+  /** Ensemble members only: the run they belong to. */
+  ensembleRunId?: string;
+  /** Ensemble members only: position in the profile (`modelIndex` is then meaningless). */
+  memberIndex?: number;
 };
 
 export type PanelRunArgs = {
@@ -85,6 +116,15 @@ export function panelApply(requestId: string) {
 
 export function panelCopy(requestId: string) {
   return invoke<void>("panel_copy", { requestId });
+}
+
+export function panelEnsemblePreview(args: EnsembleArgs) {
+  return invoke<unknown>("panel_ensemble_preview", args);
+}
+
+/** Starts every member of a profile; resolves to the ensemble run id. Rejects above the cost limit. */
+export function panelRunEnsemble(args: EnsembleArgs) {
+  return invoke<string>("panel_run_ensemble", args);
 }
 
 export function panelClose() {
@@ -189,6 +229,31 @@ function num(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function normalizePanelModels(raw: unknown): PanelModel[] {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .map((item) => ({
+      key: str(item.key) ?? "",
+      label: str(item.label) ?? "Model",
+      effort: str(item.effort),
+      color: safeColor(item.color),
+      billing: str(item.billing) ?? "",
+    }));
+}
+
+function normalizeProfiles(raw: unknown): PanelEnsembleProfile[] {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .filter((item) => typeof item.id === "string" && item.id.length > 0)
+    .map((item) => ({
+      id: item.id as string,
+      name: str(item.name) || (item.id as string),
+      members: normalizePanelModels(item.members).slice(0, MAX_ENSEMBLE_MEMBERS),
+    }))
+    .filter((profile) => profile.members.length > 0)
+    .slice(0, MAX_PANEL_PROFILES);
+}
+
 /** Validates an untrusted init payload; null when it is unusable. */
 export function normalizePanelInit(raw: unknown): PanelInit | null {
   if (!raw || typeof raw !== "object") return null;
@@ -205,15 +270,7 @@ export function normalizePanelInit(raw: unknown): PanelInit | null {
       instruction: str(item.instruction) ?? "",
       builtin: item.builtin === true,
     }));
-  const models = (Array.isArray(p.models) ? p.models : [])
-    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
-    .map((item) => ({
-      key: str(item.key) ?? "",
-      label: str(item.label) ?? "Model",
-      effort: str(item.effort),
-      color: safeColor(item.color),
-      billing: str(item.billing) ?? "",
-    }));
+  const models = normalizePanelModels(p.models);
   const activePresetId = presets.some((preset) => preset.id === p.activePresetId)
     ? (p.activePresetId as string)
     : presets[0]?.id ?? "";
@@ -234,6 +291,8 @@ export function normalizePanelInit(raw: unknown): PanelInit | null {
       .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
       .slice(0, CUSTOM_INSTRUCTION_HISTORY),
     maxChars: num(p.maxChars) ?? 0,
+    ensembleProfiles: normalizeProfiles(p.ensembleProfiles),
+    ensembleMaxUsd: Math.max(0, num(p.ensembleMaxUsd) ?? 0),
   };
 }
 
@@ -262,7 +321,64 @@ export function normalizePanelResult(raw: unknown): PanelResult | null {
     costUsd: num(p.costUsd),
     warnings: (Array.isArray(p.warnings) ? p.warnings : []).filter((item): item is string => typeof item === "string"),
     error: str(p.error),
+    ...ensembleFields(p),
   };
+}
+
+function ensembleFields(p: Record<string, unknown>): Pick<PanelResult, "ensembleRunId" | "memberIndex"> {
+  const runId = str(p.ensembleRunId);
+  const member = num(p.memberIndex);
+  if (!runId || member === null || member < 0 || !Number.isInteger(member)) return {};
+  return { ensembleRunId: runId, memberIndex: member };
+}
+
+/** Validates an untrusted preview; null when it is unusable. */
+export function normalizeEnsemblePreview(raw: unknown): EnsemblePreview | null {
+  if (!raw || typeof raw !== "object") return null;
+  const p = raw as Record<string, unknown>;
+  const profileId = str(p.profileId);
+  if (!profileId) return null;
+  const estimatedUsd = num(p.estimatedUsd);
+  const limitUsd = num(p.limitUsd);
+  return {
+    profileId,
+    members: normalizePanelModels(p.members).slice(0, MAX_ENSEMBLE_MEMBERS),
+    providers: (Array.isArray(p.providers) ? p.providers : []).filter((item): item is string => typeof item === "string"),
+    estimatedUsd: estimatedUsd !== null && estimatedUsd > 0 ? estimatedUsd : 0,
+    unknownCost: p.unknownCost === true,
+    limitUsd: limitUsd !== null && limitUsd > 0 ? limitUsd : 0,
+    // Fail closed: anything but an explicit `false` counts as blocked.
+    blocked: p.blocked !== false,
+  };
+}
+
+/** Estimates and limits: "$0.0123", "$0.05", "$1.20"; "$0" for nothing. */
+export function formatUsd(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "$0";
+  if (value < 0.0001) return "<$0.0001";
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  // Four decimals, without trailing zeros beyond cents.
+  return `$${value.toFixed(4).replace(/0{1,2}$/, "")}`;
+}
+
+/** "1–3" for the card footer hint. */
+export function cardKeyRange(count: number) {
+  const shown = Math.min(count, MAX_ENSEMBLE_MEMBERS);
+  return shown <= 1 ? "1" : `1–${shown}`;
+}
+
+const providerNames: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Google Gemini",
+  openai_compatible: "OpenAI-compatible",
+  codex_cli: "ChatGPT plan (Codex CLI)",
+  claude_cli: "Claude plan (Claude Code)",
+  offline: "Offline test",
+};
+
+export function providerName(provider: string) {
+  return providerNames[provider] ?? provider;
 }
 
 /** Apply needs a finished result with text. */

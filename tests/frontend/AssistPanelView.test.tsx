@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +15,11 @@ import {
   presetKeyRange,
   rememberInstruction,
   targetAppName,
+  formatUsd,
+  normalizeEnsemblePreview,
+  type EnsemblePreview,
   type PanelInit,
+  type PanelModel,
   type PanelResult,
 } from "../../src/lib/assistPanel";
 import { AssistPanelView } from "../../src/views/AssistPanelView";
@@ -27,6 +31,8 @@ type Handler = (event: { payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
 let initPayload: PanelInit | null;
 let requestCounter: number;
+let previews: Record<string, EnsemblePreview>;
+let runEnsemble: () => Promise<string>;
 
 function panelInit(overrides: Partial<PanelInit> = {}): PanelInit {
   return {
@@ -50,8 +56,49 @@ function panelInit(overrides: Partial<PanelInit> = {}): PanelInit {
     activeModelIndex: 0,
     customInstructions: ["Translate to English", "Make it shorter"],
     maxChars: 4000,
+    ensembleProfiles: [
+      { id: "trio", name: "Trio", members: [LUNA, OPUS, GEMINI] },
+      { id: "duo", name: "Duo", members: [LUNA, { ...LUNA, key: "openai/gpt-6-luna/high", effort: "high" }] },
+    ],
+    ensembleMaxUsd: 0.05,
     ...overrides,
   };
+}
+
+const LUNA: PanelModel = { key: "openai/gpt-6-luna/low", label: "GPT-6 Luna", effort: "low", color: "#10a37f", billing: "api" };
+const OPUS: PanelModel = { key: "claude_cli/claude-opus-5-5/medium", label: "Claude Opus 5.5", effort: "medium", color: "#d97757", billing: "claude_plan" };
+const GEMINI: PanelModel = { key: "gemini/gemini/default", label: "Gemini 3.8 Flash", effort: null, color: "#4285f4", billing: "api" };
+
+function ensemblePreview(overrides: Partial<EnsemblePreview> = {}): EnsemblePreview {
+  return {
+    profileId: "trio",
+    members: [LUNA, OPUS, GEMINI],
+    providers: ["openai", "claude_cli", "gemini"],
+    estimatedUsd: 0.0123,
+    unknownCost: false,
+    limitUsd: 0.05,
+    blocked: false,
+    ...overrides,
+  };
+}
+
+function member(index: number, overrides: Partial<PanelResult> = {}): PanelResult {
+  const model = [LUNA, OPUS, GEMINI][index] ?? LUNA;
+  return result({
+    requestId: `m${index}`,
+    modelIndex: 18446744073709552000,
+    phase: "thinking",
+    text: "",
+    label: model.label,
+    effort: model.effort,
+    billing: model.billing,
+    color: model.color,
+    durationMs: null,
+    costUsd: null,
+    ensembleRunId: "e1",
+    memberIndex: index,
+    ...overrides,
+  });
 }
 
 function result(overrides: Partial<PanelResult> = {}): PanelResult {
@@ -101,17 +148,26 @@ beforeEach(() => {
   handlers.clear();
   initPayload = panelInit();
   requestCounter = 0;
+  previews = {
+    trio: ensemblePreview(),
+    duo: ensemblePreview({ profileId: "duo", members: [LUNA, { ...LUNA, effort: "high" }], providers: ["openai"], estimatedUsd: 0.002, unknownCost: true }),
+  };
+  runEnsemble = async () => "e1";
   vi.mocked(listen).mockImplementation(async (event, callback) => {
     handlers.set(event, callback as unknown as Handler);
     return () => undefined;
   });
-  vi.mocked(invoke).mockImplementation(async (command: string) => {
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
     switch (command) {
       case "get_panel_init":
         return initPayload;
       case "panel_run":
         requestCounter += 1;
         return `r${requestCounter}`;
+      case "panel_ensemble_preview":
+        return previews[(args as { profileId: string }).profileId];
+      case "panel_run_ensemble":
+        return runEnsemble();
       default:
         return undefined;
     }
@@ -355,10 +411,226 @@ describe("AssistPanelView", () => {
     expect(await screen.findByText("No API key")).toBeInTheDocument();
   });
 
-  it("explains that ensemble is not available yet", async () => {
+});
+
+function invokeCalls(command: string) {
+  return vi.mocked(invoke).mock.calls.filter(([name]) => name === command).map(([, args]) => args);
+}
+
+function card(number: number) {
+  return screen.getByTestId(`ensemble-card-${number}`);
+}
+
+async function openCards() {
+  await renderPanel();
+  press("e");
+  await screen.findByTestId("ensemble-cost");
+  press("Enter");
+  await waitFor(() => expect(invokeCalls("panel_run_ensemble")).toHaveLength(1));
+  // Let the run id resolve before member events arrive.
+  await act(async () => undefined);
+}
+
+describe("AssistPanelView ensemble", () => {
+  it("opens a preview with members, providers, cost and limit; number keys pick profiles", async () => {
     await renderPanel();
     press("e");
-    expect(screen.getAllByText("Ensemble arrives in a later update").length).toBeGreaterThan(0);
+    expect(invokeCalls("panel_ensemble_preview")).toEqual([{ profileId: "trio", presetId: "polish", customInstruction: null }]);
+    const cost = await screen.findByTestId("ensemble-cost");
+    expect(cost).toHaveTextContent("≈ $0.0123");
+    expect(cost).toHaveTextContent("limit $0.05 per run");
+    const members = screen.getByRole("list", { name: "Members" });
+    expect(within(members).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "GPT-6 Luna · lowAPI",
+      "Claude Opus 5.5 · mediumClaude plan",
+      "Gemini 3.8 FlashAPI",
+    ]);
+    expect(screen.getByText(/Sent to/).parentElement).toHaveTextContent("OpenAI, Claude plan (Claude Code), Google Gemini");
+    expect(screen.getByRole("button", { name: "1Trio" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Enter run 3 models" })).toBeEnabled();
+    // Number keys pick a profile here, not a preset.
+    press("2");
+    await waitFor(() => expect(screen.getByTestId("ensemble-cost")).toHaveTextContent("≈ $0.002"));
+    expect(invokeCalls("panel_ensemble_preview")).toHaveLength(2);
+    expect(invokeCalls("panel_ensemble_preview")[1]).toMatchObject({ profileId: "duo" });
+    expect(screen.getByText(/no known price/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "2Duo" })).toHaveAttribute("aria-pressed", "true");
+    expect(runCalls()).toHaveLength(1);
+  });
+
+  it("blocks a run above the cost limit and offers no run button", async () => {
+    previews.trio = ensemblePreview({ estimatedUsd: 0.08, blocked: true });
+    await renderPanel();
+    press("e");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Over the cost limit");
+    expect(screen.getByRole("alert")).toHaveTextContent("estimated at $0.08, above the per-run limit of $0.05");
+    expect(screen.queryByRole("button", { name: /run/ })).not.toBeInTheDocument();
+    press("Enter");
+    press("e");
+    expect(invokeCalls("panel_run_ensemble")).toHaveLength(0);
+  });
+
+  it("runs the profile and shows one card per member, routed by member index", async () => {
+    await openCards();
+    expect(invokeCalls("panel_run_ensemble")).toEqual([{ profileId: "trio", presetId: "polish", customInstruction: null }]);
+    expect(screen.getAllByTestId(/^ensemble-card-/)).toHaveLength(3);
+    expect(card(1)).toHaveTextContent("GPT-6 Luna · low");
+    expect(card(2)).toHaveTextContent("Claude Opus 5.5 · medium");
+    expect(card(2)).toHaveTextContent("Claude plan");
+    expect(within(card(3)).getByText("Waiting for the answer…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Ensemble · 0 / 3");
+
+    emit(PANEL_RESULT_EVENT, member(1, { phase: "streaming", text: "Second card" }));
+    expect(within(card(2)).getByTestId("ensemble-text-2")).toHaveTextContent("Second card");
+    expect(within(card(1)).queryByText("Second card")).not.toBeInTheDocument();
+    emit(PANEL_RESULT_EVENT, member(0, { phase: "done", text: "First card.", durationMs: 1400, costUsd: 0.0004 }));
+    expect(card(1)).toHaveTextContent("API · ≈ $0.0004");
+    expect(card(1)).toHaveTextContent("1.4 s");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Ensemble · 1 / 3");
+
+    // Other runs and sessions are ignored; members never reach the single view.
+    emit(PANEL_RESULT_EVENT, member(2, { ensembleRunId: "old", phase: "done", text: "Old run" }));
+    emit(PANEL_RESULT_EVENT, member(2, { sessionId: "s0", phase: "done", text: "Old session" }));
+    expect(screen.queryByText("Old run")).not.toBeInTheDocument();
+    expect(screen.queryByText("Old session")).not.toBeInTheDocument();
+    press("Escape");
+    expect(screen.queryByText("First card.")).not.toBeInTheDocument();
+    expect(screen.getByText("Thinking…")).toBeInTheDocument();
+  });
+
+  it("keeps member events that arrive before the run id is known", async () => {
+    let resolveRun!: (id: string) => void;
+    runEnsemble = () => new Promise((resolve) => { resolveRun = resolve; });
+    await renderPanel();
+    press("e");
+    await screen.findByTestId("ensemble-cost");
+    press("Enter");
+    await waitFor(() => expect(invokeCalls("panel_run_ensemble")).toHaveLength(1));
+    emit(PANEL_RESULT_EVENT, member(0, { phase: "done", text: "Early answer." }));
+    emit(PANEL_RESULT_EVENT, member(1, { ensembleRunId: "other", phase: "done", text: "Other run." }));
+    await act(async () => resolveRun("e1"));
+    expect(within(card(1)).getByTestId("ensemble-text-1")).toHaveTextContent("Early answer.");
+    expect(screen.queryByText("Other run.")).not.toBeInTheDocument();
+  });
+
+  it("selects cards with number keys, applies and copies the selected card", async () => {
+    await openCards();
+    emit(PANEL_RESULT_EVENT, member(0, { phase: "done", text: "First." }));
+    emit(PANEL_RESULT_EVENT, member(1, { phase: "streaming", text: "Second" }));
+    emit(PANEL_RESULT_EVENT, member(2, { phase: "done", text: "Third." }));
+    expect(within(card(1)).getByRole("button", { pressed: true })).toBeInTheDocument();
+
+    // Number keys select cards, not presets.
+    press("3");
+    expect(within(card(3)).getByRole("button", { pressed: true })).toBeInTheDocument();
+    expect(within(card(1)).getByRole("button", { pressed: false })).toBeInTheDocument();
+    expect(runCalls()).toHaveLength(1);
+    press("9");
+    expect(within(card(3)).getByRole("button", { pressed: true })).toBeInTheDocument();
+
+    press("c", { ctrlKey: true });
+    expect(invoke).toHaveBeenCalledWith("panel_copy", { requestId: "m2" });
+
+    // A card that is still writing cannot be applied.
+    press("2");
+    press("Enter");
+    expect(invokeCalls("panel_apply")).toHaveLength(0);
+
+    fireEvent.click(within(card(3)).getByRole("button", { name: /^3\. Gemini 3\.8 Flash/ }));
+    press("Enter");
+    expect(invokeCalls("panel_apply")).toEqual([{ requestId: "m2" }]);
+    press("Enter");
+    expect(invokeCalls("panel_apply")).toHaveLength(1);
+  });
+
+  it("shows a failed member's own error while the others continue", async () => {
+    await openCards();
+    emit(PANEL_RESULT_EVENT, member(1, { phase: "failed", error: "Claude Code is not signed in" }));
+    emit(PANEL_RESULT_EVENT, member(0, { phase: "streaming", text: "Still going" }));
+    expect(within(card(2)).getByText("Claude Code is not signed in")).toBeInTheDocument();
+    expect(within(card(2)).getAllByText("Failed").length).toBeGreaterThan(0);
+    expect(within(card(1)).getByTestId("ensemble-text-1")).toHaveTextContent("Still going");
+    expect(within(card(1)).queryByText(/not signed in/)).not.toBeInTheDocument();
+    emit(PANEL_RESULT_EVENT, member(0, { phase: "done", text: "Finished." }));
+    press("1");
+    press("Enter");
+    expect(invokeCalls("panel_apply")).toEqual([{ requestId: "m0" }]);
+  });
+
+  it("toggles a diff for the selected card and re-runs fresh with R", async () => {
+    await openCards();
+    emit(PANEL_RESULT_EVENT, member(0, { phase: "done", text: "The results show that the method is robust." }));
+    emit(PANEL_RESULT_EVENT, member(2, { phase: "done", text: "Other text." }));
+    press("d");
+    const removed = [...within(card(1)).getByTestId("ensemble-diff-1").querySelectorAll("del")].map((node) => node.textContent?.trim());
+    expect(removed).toContain("shows");
+    expect(within(card(3)).queryByTestId("ensemble-diff-3")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "D diff" })).toHaveAttribute("aria-pressed", "true");
+    press("d");
+    expect(within(card(1)).getByTestId("ensemble-text-1")).toBeInTheDocument();
+
+    runEnsemble = async () => "e2";
+    press("r");
+    await waitFor(() => expect(invokeCalls("panel_run_ensemble")).toHaveLength(2));
+    await act(async () => undefined);
+    expect(within(card(1)).queryByText(/The results show/)).not.toBeInTheDocument();
+    emit(PANEL_RESULT_EVENT, member(0, { phase: "done", text: "Stale e1." }));
+    expect(screen.queryByText("Stale e1.")).not.toBeInTheDocument();
+    emit(PANEL_RESULT_EVENT, member(0, { ensembleRunId: "e2", phase: "done", text: "Fresh e2." }));
+    expect(within(card(1)).getByTestId("ensemble-text-1")).toHaveTextContent("Fresh e2.");
+  });
+
+  it("returns to the single view with Esc and closes with a second Esc", async () => {
+    await openCards();
+    press("Escape");
+    expect(screen.queryByTestId("ensemble-card-1")).not.toBeInTheDocument();
+    expect(screen.getByTestId("panel-header")).toHaveTextContent("GPT-6 Luna · low");
+    expect(invoke).not.toHaveBeenCalledWith("panel_close");
+    // Number keys select presets again.
+    press("2");
+    await waitFor(() => expect(lastRun()).toMatchObject({ presetId: "clearer" }));
+    press("Escape");
+    expect(invoke).toHaveBeenCalledWith("panel_close");
+  });
+
+  it("leaves the preview with Esc and shows why a run could not start", async () => {
+    await renderPanel();
+    press("e");
+    await screen.findByTestId("ensemble-cost");
+    press("Escape");
+    expect(screen.queryByTestId("ensemble-cost")).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith("panel_close");
+
+    runEnsemble = async () => { throw "Estimated $0.0600 exceeds the per-run limit of $0.05"; };
+    press("e");
+    await screen.findByTestId("ensemble-cost");
+    press("e");
+    expect(await screen.findByText("Could not start the ensemble")).toBeInTheDocument();
+    expect(screen.getAllByText(/exceeds the per-run limit/).length).toBeGreaterThan(0);
+  });
+
+  it("uses the last custom instruction and asks for one first", async () => {
+    await renderPanel();
+    press("5");
+    const input = screen.getByRole("textbox", { name: "Custom instruction" });
+    await waitFor(() => expect(input).toHaveFocus());
+    act(() => input.blur());
+    press("e");
+    expect(invokeCalls("panel_ensemble_preview")).toHaveLength(0);
+    expect(screen.getAllByText("Run a custom instruction first, then press E").length).toBeGreaterThan(0);
+
+    fireEvent.change(input, { target: { value: "Make it friendlier" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    press("e");
+    expect(invokeCalls("panel_ensemble_preview")).toEqual([{ profileId: "trio", presetId: "custom", customInstruction: "Make it friendlier" }]);
+  });
+
+  it("explains when there is no ensemble profile", async () => {
+    initPayload = panelInit({ ensembleProfiles: [] });
+    await renderPanel();
+    press("e");
+    expect(screen.getAllByText(/No ensemble models yet/).length).toBeGreaterThan(0);
+    expect(invokeCalls("panel_ensemble_preview")).toHaveLength(0);
   });
 });
 
@@ -404,5 +676,24 @@ describe("assistPanel helpers", () => {
     expect(normalizePanelInit({ ...panelInit(), presets: many })?.presets).toHaveLength(9);
     expect(normalizePanelResult({ ...result(), phase: "weird" })).toBeNull();
     expect(normalizePanelResult({ ...result(), color: "red" })?.color).toBe("#8a8a8a");
+    expect(normalizePanelResult(result())).not.toHaveProperty("memberIndex");
+    expect(normalizePanelResult({ ...result(), ensembleRunId: "e1", memberIndex: 2 })).toMatchObject({ ensembleRunId: "e1", memberIndex: 2 });
+    expect(normalizePanelResult({ ...result(), ensembleRunId: "e1", memberIndex: -1 })).not.toHaveProperty("ensembleRunId");
+    const withProfiles = normalizePanelInit({ ...panelInit(), ensembleProfiles: [{ id: "x", name: "X", members: [] }, { id: "y", members: [LUNA] }] });
+    expect(withProfiles?.ensembleProfiles).toEqual([{ id: "y", name: "y", members: [LUNA] }]);
+    expect(normalizePanelInit({ ...panelInit(), ensembleProfiles: undefined, ensembleMaxUsd: undefined })).toMatchObject({ ensembleProfiles: [], ensembleMaxUsd: 0 });
+  });
+
+  it("validates ensemble previews and fails closed", () => {
+    expect(normalizeEnsemblePreview(null)).toBeNull();
+    expect(normalizeEnsemblePreview({ ...ensemblePreview(), profileId: "" })).toBeNull();
+    expect(normalizeEnsemblePreview({ ...ensemblePreview(), blocked: undefined })?.blocked).toBe(true);
+    expect(normalizeEnsemblePreview({ ...ensemblePreview(), estimatedUsd: Number.NaN })?.estimatedUsd).toBe(0);
+    expect(formatUsd(0)).toBe("$0");
+    expect(formatUsd(0.00004)).toBe("<$0.0001");
+    expect(formatUsd(0.0123)).toBe("$0.0123");
+    expect(formatUsd(0.05)).toBe("$0.05");
+    expect(formatUsd(0.1)).toBe("$0.10");
+    expect(formatUsd(1.234)).toBe("$1.23");
   });
 });

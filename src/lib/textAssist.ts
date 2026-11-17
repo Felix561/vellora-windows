@@ -3,6 +3,7 @@ import { getTextAssistOverview, getTextProviderKeys, onTextAssistRunRecorded } f
 import type {
   CompatEndpoint,
   Effort,
+  EnsembleProfile,
   ModelRef,
   TextAssistOverview,
   TextAssistRun,
@@ -203,6 +204,15 @@ export function isHexColor(value: string) {
 
 /** Endpoint id derived from its name: lowercase slug, unique among `taken`, at most 40 characters. */
 export function endpointIdFromName(name: string, taken: Iterable<string> = []) {
+  return idFromName(name, taken, "endpoint");
+}
+
+/** Ensemble profile id derived from its name, like endpoint ids. */
+export function profileIdFromName(name: string, taken: Iterable<string> = []) {
+  return idFromName(name, taken, "profile");
+}
+
+function idFromName(name: string, taken: Iterable<string>, fallback: string) {
   const used = new Set(taken);
   const base = name
     .normalize("NFKD")
@@ -211,7 +221,7 @@ export function endpointIdFromName(name: string, taken: Iterable<string> = []) {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "")
     .slice(0, 40)
-    .replace(/[-_]+$/, "") || "endpoint";
+    .replace(/[-_]+$/, "") || fallback;
   if (!used.has(base)) return base;
   for (let suffix = 2; ; suffix += 1) {
     const tail = `-${suffix}`;
@@ -378,14 +388,82 @@ export function removeFavorite(favorites: readonly ModelRef[], index: number) {
 
 /** Sets the effort of one favorite; rejects efforts the model does not offer and duplicates. */
 export function setFavoriteEffort(favorites: readonly ModelRef[], index: number, effort: Effort, model: TextModelInfo | null): FavoriteResult {
-  const current = favorites[index];
-  if (!current) return { favorites: null, error: "That favorite no longer exists." };
-  if (!model || !model.efforts.includes(effort)) return { favorites: null, error: "This model does not offer that effort." };
+  const result = setRefEffort(favorites, index, effort, model, "That favorite no longer exists.", "This model and effort is already a favorite.");
+  return result.error === null ? { favorites: result.refs, error: null } : { favorites: null, error: result.error };
+}
+
+function setRefEffort(refs: readonly ModelRef[], index: number, effort: Effort, model: TextModelInfo | null, missing: string, duplicate: string):
+  { refs: ModelRef[]; error: null } | { refs: null; error: string } {
+  const current = refs[index];
+  if (!current) return { refs: null, error: missing };
+  if (!model || !model.efforts.includes(effort)) return { refs: null, error: "This model does not offer that effort." };
   const updated: ModelRef = { ...current, effort };
-  if (favorites.some((item, position) => position !== index && sameModelRef(item, updated))) {
-    return { favorites: null, error: "This model and effort is already a favorite." };
+  if (refs.some((item, position) => position !== index && sameModelRef(item, updated))) return { refs: null, error: duplicate };
+  return { refs: refs.map((item, position) => (position === index ? updated : item)), error: null };
+}
+
+// ---------------------------------------------------------------------------
+// Ensemble profiles (Models -> Text models). Limits mirror the Rust rules.
+// ---------------------------------------------------------------------------
+
+export const MAX_ENSEMBLE_PROFILES = 20;
+export const MAX_PROFILE_MEMBERS = 9;
+export const MAX_PROFILE_NAME = 40;
+export const ENSEMBLE_MAX_USD = { min: 0, max: 5 } as const;
+
+export type MembersResult = { members: ModelRef[]; error: null } | { members: null; error: string };
+
+/** Adds a member; the same model may appear with different efforts, but not twice with the same one. */
+export function addProfileMember(members: readonly ModelRef[], ref: ModelRef): MembersResult {
+  if (members.length >= MAX_PROFILE_MEMBERS) return { members: null, error: `A profile has at most ${MAX_PROFILE_MEMBERS} models.` };
+  if (members.some((item) => sameModelRef(item, ref))) return { members: null, error: "This model and effort is already in the profile." };
+  return { members: [...members, ref], error: null };
+}
+
+export function setMemberEffort(members: readonly ModelRef[], index: number, effort: Effort, model: TextModelInfo | null): MembersResult {
+  const result = setRefEffort(members, index, effort, model, "That model is no longer in the profile.", "This model and effort is already in the profile.");
+  return result.error === null ? { members: result.refs, error: null } : { members: null, error: result.error };
+}
+
+export type ProfileDraft = { name: string; members: ModelRef[] };
+export type ProfileErrors = Partial<Record<keyof ProfileDraft, string>>;
+
+/**
+ * Validates a profile draft: at most 20 profiles, names of 1 to 40 characters (unique, ignoring
+ * case), 1 to 9 members without exact duplicates, and an id `[a-z0-9_-]{1,40}` derived from the
+ * name when adding (fixed when editing). Returns the profile to save, or the field errors.
+ */
+export function validateProfileDraft(draft: ProfileDraft, existing: readonly EnsembleProfile[], editingId: string | null):
+  { profile: EnsembleProfile; errors: null } | { profile: null; errors: ProfileErrors } {
+  const errors: ProfileErrors = {};
+  const name = draft.name.trim();
+  if (editingId === null && existing.length >= MAX_ENSEMBLE_PROFILES) errors.name = `Vellora supports at most ${MAX_ENSEMBLE_PROFILES} ensemble profiles.`;
+  else if (!name) errors.name = "Enter a name.";
+  else if ([...name].length > MAX_PROFILE_NAME) errors.name = `Use at most ${MAX_PROFILE_NAME} characters.`;
+  else if (existing.some((profile) => profile.id !== editingId && profile.name.trim().toLowerCase() === name.toLowerCase())) {
+    errors.name = "Another profile already uses this name.";
   }
-  return { favorites: favorites.map((item, position) => (position === index ? updated : item)), error: null };
+  if (draft.members.length === 0) errors.members = "Add at least one model.";
+  else if (draft.members.length > MAX_PROFILE_MEMBERS) errors.members = `Use at most ${MAX_PROFILE_MEMBERS} models.`;
+  else if (draft.members.some((ref, index) => draft.members.findIndex((item) => sameModelRef(item, ref)) !== index)) {
+    errors.members = "Each model and effort can appear only once.";
+  }
+  if (Object.keys(errors).length > 0) return { profile: null, errors };
+  const id = editingId ?? profileIdFromName(name, existing.map((profile) => profile.id));
+  if (!isEndpointId(id) || existing.some((profile) => profile.id === id && profile.id !== editingId)) {
+    return { profile: null, errors: { name: "This name does not give a usable profile ID. Try another name." } };
+  }
+  return { profile: { id, name, members: [...draft.members] }, errors: null };
+}
+
+/** Parses the per-run ensemble limit in USD; returns an error message when it is out of range. */
+export function parseEnsembleLimit(text: string): { value: number; error: null } | { value: null; error: string } {
+  const trimmed = text.trim().replace(/^\$/, "");
+  const value = Number(trimmed);
+  if (!trimmed || !Number.isFinite(value) || value < ENSEMBLE_MAX_USD.min || value > ENSEMBLE_MAX_USD.max) {
+    return { value: null, error: `Enter an amount between $${ENSEMBLE_MAX_USD.min} and $${ENSEMBLE_MAX_USD.max}.` };
+  }
+  return { value: Math.round(value * 10_000) / 10_000, error: null };
 }
 
 /** Color keys still used by the quick model, favorites, presets or ensemble profiles. */
@@ -461,19 +539,24 @@ export function useTextProviderKeys(endpointIds: readonly string[]) {
 }
 
 /**
- * Settings patch after the endpoint list changed: favorites that point at a removed endpoint, or at
- * a model the endpoint no longer lists, are dropped, and color overrides nobody uses are pruned.
+ * Settings patch after the endpoint list changed: favorites and ensemble members that point at a
+ * removed endpoint, or at a model the endpoint no longer lists, are dropped (profiles left without
+ * members are removed), and color overrides nobody uses are pruned.
  */
 export function endpointsPatch(assist: TextAssistSettings, endpoints: CompatEndpoint[]):
-  Pick<TextAssistSettings, "openaiCompatible" | "favoriteModels" | "modelColors"> {
+  Pick<TextAssistSettings, "openaiCompatible" | "favoriteModels" | "ensembleProfiles" | "modelColors"> {
   const byId = new Map(endpoints.map((endpoint) => [endpoint.id, endpoint]));
-  const favoriteModels = assist.favoriteModels.filter((ref) => {
+  const available = (ref: ModelRef) => {
     if (ref.provider !== "openai_compatible") return true;
     const endpoint = ref.endpoint ? byId.get(ref.endpoint) : undefined;
     return Boolean(endpoint && endpoint.models.includes(ref.model));
-  });
-  const next = { ...assist, openaiCompatible: endpoints, favoriteModels };
-  return { openaiCompatible: endpoints, favoriteModels, modelColors: pruneModelColors(next) };
+  };
+  const favoriteModels = assist.favoriteModels.filter(available);
+  const ensembleProfiles = assist.ensembleProfiles
+    .map((profile) => (profile.members.every(available) ? profile : { ...profile, members: profile.members.filter(available) }))
+    .filter((profile) => profile.members.length > 0);
+  const next = { ...assist, openaiCompatible: endpoints, favoriteModels, ensembleProfiles };
+  return { openaiCompatible: endpoints, favoriteModels, ensembleProfiles, modelColors: pruneModelColors(next) };
 }
 
 /** Picker label: "GPT-6 Luna - $0.10 in / $0.50 out per 1M tokens", plus retirement and key hints. */
