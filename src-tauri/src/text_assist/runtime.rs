@@ -23,10 +23,9 @@ use super::{
 };
 use crate::{
     assist_chord::{self, AssistChordEvent},
-    credentials,
     history::{self, TextAssistRun, OUTCOME_KEPT},
     text_providers::{
-        catalog, offline::UppercaseEngine, openai::OpenAiEngine, CancelToken, ModelRef,
+        catalog, factory::EngineFactory, offline::UppercaseEngine, CancelToken, ModelRef,
         ProviderKind, TextEngine, TextError,
     },
     types::AppSettings,
@@ -281,26 +280,13 @@ pub(crate) struct Runtime {
     pub(crate) halo: Halo,
     active: Mutex<Option<ActiveJob>>,
     last_kept: Arc<Mutex<Option<TextAssistRun>>>,
-    /// One OpenAI engine (and so one pooled HTTPS connection) reused across jobs.
-    openai: Arc<Mutex<Option<Arc<OpenAiEngine>>>>,
+    /// One engine per provider (and so one pooled HTTPS connection) reused across jobs.
+    factory: Arc<EngineFactory>,
     last_warm_up: Mutex<Option<Instant>>,
 }
 
 /// Minimum spacing between connection warm-ups.
 const WARM_UP_INTERVAL: Duration = Duration::from_secs(20);
-
-fn openai_engine(cache: &Mutex<Option<Arc<OpenAiEngine>>>) -> Result<Arc<OpenAiEngine>, TextError> {
-    let key = credentials::get_openai_key()
-        .map_err(|_| TextError::MissingKey)?
-        .ok_or(TextError::MissingKey)?;
-    let mut cache = cache.lock().unwrap();
-    if let Some(engine) = cache.as_ref().filter(|engine| engine.uses_key(&key)) {
-        return Ok(engine.clone());
-    }
-    let engine = Arc::new(OpenAiEngine::new(key).map_err(|_| TextError::Network)?);
-    *cache = Some(engine.clone());
-    Ok(engine)
-}
 
 static RUNTIME: std::sync::OnceLock<Arc<Runtime>> = std::sync::OnceLock::new();
 
@@ -310,14 +296,13 @@ pub(crate) fn current() -> Option<Arc<Runtime>> {
 }
 
 impl Runtime {
-    /// The engine for a model. One OpenAI engine (connection pool) is shared by all jobs.
+    /// The engine for a model (OpenAI, Anthropic, Gemini, OpenAI-compatible or offline). The
+    /// factory keeps one engine per provider/endpoint so connections are reused.
     pub(crate) fn engine_for(&self, model: &ModelRef) -> Result<Arc<dyn TextEngine>, TextError> {
         catalog::resolve_effort(model)?;
-        match model.provider {
-            ProviderKind::Offline => Ok(Arc::new(UppercaseEngine::default())),
-            ProviderKind::Openai => Ok(openai_engine(&self.openai)?),
-            _ => Err(TextError::Unsupported),
-        }
+        let settings = (self.settings)();
+        self.factory
+            .engine_for(model, &settings.text_assist.openai_compatible)
     }
 
     /// Shows a final status (ring + short label) at `anchor`, or at the pointer.
@@ -408,10 +393,7 @@ impl Runtime {
     /// on release does not pay for DNS and the TLS handshake (about 8 s on a cold start here).
     fn warm_up(&self) {
         let settings = (self.settings)();
-        if !settings.text_assist.enabled
-            || settings.text_assist.dev_offline_transform
-            || settings.text_assist.quick_model.provider != ProviderKind::Openai
-        {
+        if !settings.text_assist.enabled || settings.text_assist.dev_offline_transform {
             return;
         }
         {
@@ -421,12 +403,11 @@ impl Runtime {
             }
             *last = Some(Instant::now());
         }
-        let cache = self.openai.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Ok(engine) = openai_engine(&cache) {
-                engine.warm_up().await;
-            }
-        });
+        // Spawns its own task; no key or text is sent, and CLI/offline models are skipped.
+        self.factory.warm_up(
+            &settings.text_assist.quick_model,
+            &settings.text_assist.openai_compatible,
+        );
     }
 
     fn show_hold_cue(&self) {
@@ -566,7 +547,7 @@ pub fn start(
         },
         active: Mutex::new(None),
         last_kept,
-        openai: Arc::new(Mutex::new(None)),
+        factory: Arc::new(EngineFactory::new()),
         last_warm_up: Mutex::new(None),
     });
     let _ = RUNTIME.set(runtime.clone());

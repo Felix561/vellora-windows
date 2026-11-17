@@ -79,7 +79,8 @@ pub fn retry_delay(result: &Result<reqwest::Response, reqwest::Error>) -> Option
 pub fn retryable_status(status: StatusCode) -> bool {
     // 429 can also indicate exhausted quota or a billing limit. Return it to
     // the GUI for user action rather than blindly repeating a billable call.
-    matches!(status.as_u16(), 408 | 409 | 500 | 502 | 503 | 504)
+    // 529 is Anthropic's documented "overloaded" status, transient like 503.
+    matches!(status.as_u16(), 408 | 409 | 500 | 502 | 503 | 504 | 529)
 }
 
 fn retry_jitter() -> Duration {
@@ -202,7 +203,7 @@ mod tests {
 
     #[test]
     fn retries_only_transient_statuses() {
-        for status in [408, 409, 500, 502, 503, 504] {
+        for status in [408, 409, 500, 502, 503, 504, 529] {
             assert!(retryable_status(StatusCode::from_u16(status).unwrap()));
         }
         for status in [200, 400, 401, 403, 413, 429] {

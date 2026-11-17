@@ -4,7 +4,9 @@ use serde::Serialize;
 
 use super::runtime;
 use crate::{
-    clipboard, history,
+    clipboard, credentials,
+    credentials::ProviderKey,
+    history,
     history::{TextAssistCostTotals, TextAssistRun},
     text_providers::{catalog, Effort, ProviderKind},
 };
@@ -37,14 +39,19 @@ fn models() -> Vec<TextModelInfo> {
     catalog::models()
         .iter()
         .filter(|model| model.provider != ProviderKind::Offline)
-        .map(|model| TextModelInfo {
+        .map(|model| {
+            // Prices in effect today (Gemini Flash prices change on 2027-01-01).
+            let (input, output) = catalog::current_prices(model);
+            (model, input, output)
+        })
+        .map(|(model, input, output)| TextModelInfo {
             provider: model.provider,
             id: model.id.to_string(),
             label: model.label.to_string(),
             efforts: model.efforts.to_vec(),
             default_effort: model.default_effort,
-            input_usd_per_million: model.input_usd_per_million,
-            output_usd_per_million: model.output_usd_per_million,
+            input_usd_per_million: input,
+            output_usd_per_million: output,
             color: model.color.to_string(),
             quick_candidate: model.quick_candidate,
             shutdown: model.shutdown.map(str::to_string),
@@ -97,9 +104,91 @@ pub fn get_text_assist_overview(
     })
 }
 
+/// Which provider keys are saved (never the keys themselves).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextProviderKeys {
+    pub openai: bool,
+    pub anthropic: bool,
+    pub gemini: bool,
+    /// Endpoint id -> key saved, for the OpenAI-compatible endpoints in settings.
+    pub compat: std::collections::BTreeMap<String, bool>,
+}
+
+fn provider_key(provider: &str, endpoint_id: Option<&str>) -> Result<ProviderKey, String> {
+    match provider {
+        "anthropic" => Ok(ProviderKey::Anthropic),
+        "gemini" => Ok(ProviderKey::Gemini),
+        "openai_compatible" => {
+            let id = endpoint_id.ok_or("Choose an endpoint first")?;
+            ProviderKey::compat(id).map_err(to_string)
+        }
+        _ => Err("Use the OpenAI key setting for OpenAI".to_string()),
+    }
+}
+
+#[tauri::command]
+pub fn get_text_provider_keys(
+    window: tauri::WebviewWindow,
+    endpoint_ids: Vec<String>,
+) -> Result<TextProviderKeys, String> {
+    crate::require_main_window(&window)?;
+    let mut keys = TextProviderKeys {
+        openai: credentials::get_openai_key().map_err(to_string)?.is_some(),
+        anthropic: credentials::has_provider_key(&ProviderKey::Anthropic).map_err(to_string)?,
+        gemini: credentials::has_provider_key(&ProviderKey::Gemini).map_err(to_string)?,
+        ..TextProviderKeys::default()
+    };
+    for id in endpoint_ids.into_iter().take(10) {
+        let key = ProviderKey::compat(&id).map_err(to_string)?;
+        let saved = credentials::has_provider_key(&key).map_err(to_string)?;
+        keys.compat.insert(id, saved);
+    }
+    Ok(keys)
+}
+
+#[tauri::command]
+pub fn save_text_provider_key(
+    window: tauri::WebviewWindow,
+    provider: String,
+    endpoint_id: Option<String>,
+    key: String,
+) -> Result<(), String> {
+    crate::require_main_window(&window)?;
+    let provider = provider_key(&provider, endpoint_id.as_deref())?;
+    credentials::save_provider_key(&provider, key.trim()).map_err(to_string)
+}
+
+#[tauri::command]
+pub fn delete_text_provider_key(
+    window: tauri::WebviewWindow,
+    provider: String,
+    endpoint_id: Option<String>,
+) -> Result<(), String> {
+    crate::require_main_window(&window)?;
+    let provider = provider_key(&provider, endpoint_id.as_deref())?;
+    credentials::delete_provider_key(&provider).map_err(to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_key_names_map_and_refuse_openai() {
+        assert!(matches!(
+            provider_key("anthropic", None),
+            Ok(ProviderKey::Anthropic)
+        ));
+        assert!(matches!(
+            provider_key("gemini", None),
+            Ok(ProviderKey::Gemini)
+        ));
+        assert!(provider_key("openai_compatible", None).is_err());
+        assert!(provider_key("openai_compatible", Some("Bad Id")).is_err());
+        assert!(provider_key("openai_compatible", Some("ollama")).is_ok());
+        assert!(provider_key("openai", None).is_err());
+    }
 
     #[test]
     fn model_list_hides_the_offline_engine_and_keeps_prices() {
