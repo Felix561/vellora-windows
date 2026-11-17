@@ -454,9 +454,24 @@ fn main() {
                     set_health(app.handle(), &state, StartupPhase::Ready, None);
                     // Text Assist shares the keyboard hook; a failure here leaves dictation intact.
                     let settings_state = state.clone();
-                    if let Err(err) = text_assist::runtime::start(app.handle().clone(), move || {
-                        settings_state.settings.lock().unwrap().clone()
-                    }) {
+                    let update_state = state.clone();
+                    let update_app = app.handle().clone();
+                    if let Err(err) = text_assist::runtime::start(
+                        app.handle().clone(),
+                        move || settings_state.settings.lock().unwrap().clone(),
+                        move |change: &dyn Fn(&mut AppSettings)| {
+                            // Panel choices (last preset, custom instructions) are saved like any
+                            // settings change, under the same lock as the save command.
+                            let mut current = update_state.settings.lock().unwrap();
+                            let mut next = current.clone();
+                            change(&mut next);
+                            if settings::save_settings(&next).is_ok() {
+                                *current = next.clone();
+                                drop(current);
+                                let _ = update_app.emit("settings-changed", &next);
+                            }
+                        },
+                    ) {
                         eprintln!("Text Assist is unavailable: {err:#}");
                     }
                 }
@@ -479,6 +494,11 @@ fn main() {
             text_assist::commands::clear_text_assist_runs,
             text_assist::commands::copy_text_assist_text,
             text_assist::commands::get_text_assist_overview,
+            text_assist::panel::get_panel_init,
+            text_assist::panel::panel_run,
+            text_assist::panel::panel_apply,
+            text_assist::panel::panel_copy,
+            text_assist::panel::panel_close,
             get_settings,
             save_settings,
             has_openai_api_key,

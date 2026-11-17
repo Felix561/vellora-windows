@@ -18,6 +18,7 @@ use windows::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 use super::{
     geometry::{self, Anchor, AnchorKind, HaloLayout, PointPx, RectPx},
     job::{self, JobObserver, JobUpdate, Phase, PhaseCell, PolishJob},
+    panel,
     platform::{TargetSnapshot, WindowsPlatform},
 };
 use crate::{
@@ -40,7 +41,9 @@ const PARK: PhysicalPosition<i32> = PhysicalPosition {
     y: -32000,
 };
 
-type SettingsSource = Arc<dyn Fn() -> AppSettings + Send + Sync>;
+pub(crate) type SettingsSource = Arc<dyn Fn() -> AppSettings + Send + Sync>;
+/// Applies a change to the saved settings (persisted and announced to the main window).
+pub(crate) type SettingsUpdate = Arc<dyn Fn(&dyn Fn(&mut AppSettings)) + Send + Sync>;
 
 /// Halo payload; mirrors `HaloPayload` in `src/lib/halo.ts`.
 #[derive(Debug, Clone, Serialize)]
@@ -110,8 +113,8 @@ fn layout_for(anchor: &Anchor) -> HaloLayout {
 /// Shared halo window control. A generation counter keeps stale hide timers from hiding a
 /// newer job's halo.
 #[derive(Clone)]
-struct Halo {
-    app: tauri::AppHandle,
+pub(crate) struct Halo {
+    pub(crate) app: tauri::AppHandle,
     generation: Arc<AtomicU64>,
     last_window: Arc<Mutex<Option<RectPx>>>,
 }
@@ -141,7 +144,7 @@ impl Halo {
         generation
     }
 
-    fn hide_now(&self) {
+    pub(crate) fn hide_now(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.park();
     }
@@ -232,7 +235,7 @@ struct EngineChoice {
     color: String,
 }
 
-fn model_color(settings: &AppSettings, model: &ModelRef) -> String {
+pub(crate) fn model_color(settings: &AppSettings, model: &ModelRef) -> String {
     settings
         .text_assist
         .model_colors
@@ -242,16 +245,13 @@ fn model_color(settings: &AppSettings, model: &ModelRef) -> String {
         .unwrap_or_else(|| catalog::default_color(model.provider).to_string())
 }
 
-fn model_label(model: &ModelRef) -> String {
+pub(crate) fn model_label(model: &ModelRef) -> String {
     catalog::find(model.provider, &model.model)
         .map(|entry| entry.label.to_string())
         .unwrap_or_else(|| model.model.clone())
 }
 
-fn choose_engine(
-    settings: &AppSettings,
-    openai: &Mutex<Option<Arc<OpenAiEngine>>>,
-) -> Result<EngineChoice, TextError> {
+fn choose_engine(runtime: &Runtime, settings: &AppSettings) -> Result<EngineChoice, TextError> {
     if settings.text_assist.dev_offline_transform {
         let model = ModelRef::new(
             ProviderKind::Offline,
@@ -266,11 +266,7 @@ fn choose_engine(
         });
     }
     let model = settings.text_assist.quick_model.clone();
-    catalog::resolve_effort(&model)?;
-    let engine: Arc<dyn TextEngine> = match model.provider {
-        ProviderKind::Openai => openai_engine(openai)?,
-        _ => return Err(TextError::Unsupported),
-    };
+    let engine = runtime.engine_for(&model)?;
     Ok(EngineChoice {
         engine,
         label: model_label(&model),
@@ -279,9 +275,10 @@ fn choose_engine(
     })
 }
 
-struct Runtime {
-    settings: SettingsSource,
-    halo: Halo,
+pub(crate) struct Runtime {
+    pub(crate) settings: SettingsSource,
+    pub(crate) update_settings: SettingsUpdate,
+    pub(crate) halo: Halo,
     active: Mutex<Option<ActiveJob>>,
     last_kept: Arc<Mutex<Option<TextAssistRun>>>,
     /// One OpenAI engine (and so one pooled HTTPS connection) reused across jobs.
@@ -305,7 +302,54 @@ fn openai_engine(cache: &Mutex<Option<Arc<OpenAiEngine>>>) -> Result<Arc<OpenAiE
     Ok(engine)
 }
 
+static RUNTIME: std::sync::OnceLock<Arc<Runtime>> = std::sync::OnceLock::new();
+
+/// The running Text Assist runtime, once started.
+pub(crate) fn current() -> Option<Arc<Runtime>> {
+    RUNTIME.get().cloned()
+}
+
 impl Runtime {
+    /// The engine for a model. One OpenAI engine (connection pool) is shared by all jobs.
+    pub(crate) fn engine_for(&self, model: &ModelRef) -> Result<Arc<dyn TextEngine>, TextError> {
+        catalog::resolve_effort(model)?;
+        match model.provider {
+            ProviderKind::Offline => Ok(Arc::new(UppercaseEngine::default())),
+            ProviderKind::Openai => Ok(openai_engine(&self.openai)?),
+            _ => Err(TextError::Unsupported),
+        }
+    }
+
+    /// Shows a final status (ring + short label) at `anchor`, or at the pointer.
+    pub(crate) fn show_status(
+        &self,
+        anchor: Option<&Anchor>,
+        phase: Phase,
+        kind: &'static str,
+        color: &str,
+        label: &str,
+    ) {
+        let anchor = anchor.copied().unwrap_or_else(pointer_anchor);
+        let layout = layout_for(&anchor);
+        let generation = self.halo.show(
+            &layout,
+            HaloPayload {
+                job_id: String::new(),
+                phase: phase_name(phase),
+                kind,
+                mode: layout.mode,
+                color: color.to_string(),
+                label: label.to_string(),
+                progress: None,
+                box_rect: layout.box_rect,
+                point: layout.point,
+                badge_side: layout.badge_side,
+                scale: layout.scale,
+            },
+        );
+        self.halo.hide_later(generation, linger(phase));
+    }
+
     fn run(self: Arc<Self>, events: mpsc::Receiver<AssistChordEvent>) {
         let mut pending_hold: Option<(u64, Instant)> = None;
         let mut cue: Option<u64> = None;
@@ -352,7 +396,9 @@ impl Runtime {
                 Some(AssistChordEvent::Hold { .. }) => {
                     pending_hold = None;
                     cue = None;
-                    self.on_hold();
+                    if (self.settings)().text_assist.enabled {
+                        panel::open(&self);
+                    }
                 }
             }
         }
@@ -383,28 +429,6 @@ impl Runtime {
         });
     }
 
-    fn show_info(&self, phase: Phase, label: &str, color: &str) {
-        let anchor = pointer_anchor();
-        let layout = layout_for(&anchor);
-        let generation = self.halo.show(
-            &layout,
-            HaloPayload {
-                job_id: String::new(),
-                phase: phase_name(phase),
-                kind: "polish",
-                mode: layout.mode,
-                color: color.to_string(),
-                label: label.to_string(),
-                progress: None,
-                box_rect: layout.box_rect,
-                point: layout.point,
-                badge_side: layout.badge_side,
-                scale: layout.scale,
-            },
-        );
-        self.halo.hide_later(generation, linger(phase));
-    }
-
     fn show_hold_cue(&self) {
         let halo = self.halo.clone();
         let settings = (self.settings)();
@@ -432,12 +456,6 @@ impl Runtime {
         });
     }
 
-    fn on_hold(&self) {
-        // The Rewrite panel arrives in M4; until then explain instead of doing nothing.
-        self.halo.hide_now();
-        self.show_info(Phase::Kept, "Panel coming soon", "#8a8f98");
-    }
-
     fn on_tap(&self) {
         let mut active = self.active.lock().unwrap();
         if let Some(job) = active.as_ref() {
@@ -453,7 +471,7 @@ impl Runtime {
         if !settings.text_assist.enabled {
             return;
         }
-        let choice = match choose_engine(&settings, &self.openai) {
+        let choice = match choose_engine(self, &settings) {
             Ok(choice) => choice,
             Err(error) => {
                 let label = match error {
@@ -461,7 +479,7 @@ impl Runtime {
                     TextError::Unsupported => "Model not available".to_string(),
                     other => job::engine_error_label(&other),
                 };
-                self.show_info(Phase::Failed, &label, "#8a8f98");
+                self.show_status(None, Phase::Failed, "polish", "#8a8f98", &label);
                 return;
             }
         };
@@ -518,6 +536,7 @@ pub fn apply_settings(settings: &AppSettings) {
 pub fn start(
     app: tauri::AppHandle,
     settings: impl Fn() -> AppSettings + Send + Sync + 'static,
+    update_settings: impl Fn(&dyn Fn(&mut AppSettings)) + Send + Sync + 'static,
 ) -> anyhow::Result<()> {
     if let Some(window) = app.get_webview_window(HALO_WINDOW) {
         // Click-through and never focusable, like the status pill; parked off-screen while
@@ -534,8 +553,12 @@ pub fn start(
     let (sender, receiver) = mpsc::channel();
     assist_chord::set_sender(sender)?;
     let last_kept = LAST_KEPT.get_or_init(|| Arc::new(Mutex::new(None))).clone();
+    if let Some(window) = app.get_webview_window(panel::PANEL_WINDOW) {
+        window.set_always_on_top(true)?;
+    }
     let runtime = Arc::new(Runtime {
         settings,
+        update_settings: Arc::new(update_settings),
         halo: Halo {
             app,
             generation: Arc::new(AtomicU64::new(0)),
@@ -546,6 +569,7 @@ pub fn start(
         openai: Arc::new(Mutex::new(None)),
         last_warm_up: Mutex::new(None),
     });
+    let _ = RUNTIME.set(runtime.clone());
     // Open the provider connection once at startup as well.
     runtime.warm_up();
     thread::Builder::new()

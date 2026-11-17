@@ -113,7 +113,8 @@ pub enum GuardIssue {
 }
 
 impl GuardIssue {
-    fn reason_code(self) -> &'static str {
+    /// History/warning code for this issue, e.g. `guard_markup`.
+    pub fn reason_code(self) -> &'static str {
         match self {
             GuardIssue::Incomplete => "guard_incomplete",
             GuardIssue::Empty => "guard_empty",

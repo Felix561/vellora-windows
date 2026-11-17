@@ -10,6 +10,7 @@ pub mod commands;
 pub mod geometry;
 pub mod guard;
 pub mod job;
+pub mod panel;
 pub mod platform;
 pub mod prompts;
 pub mod runtime;

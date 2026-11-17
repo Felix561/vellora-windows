@@ -7,7 +7,10 @@ use windows::Win32::Foundation::{CloseHandle, HWND};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_RETURN};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+};
 
 use super::{
     geometry::{self, Anchor, FocusInfo},
@@ -223,6 +226,107 @@ pub(crate) fn hwnd(value: isize) -> HWND {
     HWND(value as *mut core::ffi::c_void)
 }
 
+/// Waits until Enter and Esc are released, so a key that closed the panel cannot auto-repeat
+/// into the editor once it has focus again.
+fn wait_panel_keys_released(timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while [VK_RETURN, VK_ESCAPE]
+        .iter()
+        .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } < 0)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Gives the foreground back to the target window. Vellora may do this while its panel owns
+/// the foreground (M1: back within 0-3 ms, same focused control). Returns false on failure.
+pub fn return_focus(target: &TargetSnapshot) -> bool {
+    wait_panel_keys_released(Duration::from_millis(600));
+    if foreground().0 != target.hwnd {
+        let _ = unsafe { SetForegroundWindow(hwnd(target.hwnd)) };
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    while std::time::Instant::now() < deadline {
+        if foreground().0 == target.hwnd {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+/// Pure re-copy decision for the panel (spec 4.3): the editor must still hold exactly the text
+/// that was captured when the panel opened.
+pub(crate) fn recopy_matches(copied: Option<&str>, original: &str) -> Result<(), Failure> {
+    match copied {
+        None => Err(Failure::new("selection_lost", "Selection lost")),
+        Some(text) if text == original => Ok(()),
+        Some(_) => Err(Failure::new("selection_changed", "Selection changed")),
+    }
+}
+
+impl WindowsPlatform {
+    /// Rewrite panel Apply (spec 4.3): focus hand-back, re-copy check, then paste. Any failure
+    /// leaves the editor untouched; the caller keeps the result.
+    pub fn apply_from_panel(
+        &self,
+        target: &TargetSnapshot,
+        original: &str,
+        text: &str,
+        restore_delay: Duration,
+    ) -> Result<(), Failure> {
+        if !return_focus(target) {
+            return Err(Failure::new("target_changed", "Window changed"));
+        }
+        // The focused control must come back too (it is restored asynchronously).
+        let deadline = std::time::Instant::now() + Duration::from_millis(400);
+        loop {
+            let focus = geometry::focus_info(target.hwnd);
+            if focus.focus_hwnd == target.focus.focus_hwnd {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(Failure::new("focus_changed", "Focus changed"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !clip::wait_modifiers_released(MODIFIER_RELEASE_TIMEOUT) {
+            return Err(Failure::new("modifiers_held", "Release keys"));
+        }
+        let _input = input_lock::blocking_lock();
+        let saved = clip::ClipboardSnapshot::capture()
+            .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
+        let before = clip::sequence();
+        clip::send_copy().map_err(|_| Failure::new("input_blocked", "Copy blocked"))?;
+        let Some(settled) = clip::wait_for_copy(before, CopyWait::default()) else {
+            return Err(Failure::new("selection_lost", "Selection lost"));
+        };
+        let copied = clip::read_copied_selection();
+        let verdict = match &copied {
+            Ok(copied) => recopy_matches(copied.text.as_deref(), original),
+            Err(_) => Err(Failure::new("clipboard_busy", "Clipboard busy")),
+        };
+        if let Err(failure) = verdict {
+            if clip::sequence() == settled {
+                let _ = saved.restore();
+            }
+            return Err(failure);
+        }
+        let written = clip::write_text_excluded(text)
+            .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
+        if clip::send_paste().is_err() {
+            let _ = saved.restore();
+            return Err(Failure::new("paste_failed", "Paste blocked"));
+        }
+        std::thread::sleep(restore_delay.max(MIN_RESTORE_DELAY));
+        if clip::sequence() == written {
+            let _ = saved.restore();
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +410,20 @@ mod tests {
         assert_eq!(
             check_copied(Some("ääääa".into()), VsCodeCopy::Selection, 5).unwrap(),
             "ääääa"
+        );
+    }
+
+    #[test]
+    fn recopy_must_match_the_captured_text_exactly() {
+        let original = "a b\r\n";
+        assert!(recopy_matches(Some(original), original).is_ok());
+        assert_eq!(
+            recopy_matches(Some("a b"), original).unwrap_err().code,
+            "selection_changed"
+        );
+        assert_eq!(
+            recopy_matches(None, "a").unwrap_err().code,
+            "selection_lost"
         );
     }
 
