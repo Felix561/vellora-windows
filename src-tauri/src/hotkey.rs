@@ -1,3 +1,4 @@
+use crate::{assist_chord, input_activity};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,7 +13,8 @@ use windows::Win32::{
     Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
     UI::{
         Input::KeyboardAndMouse::{
-            GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_LWIN, VK_RCONTROL, VK_RWIN,
+            GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+            VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
         },
         WindowsAndMessaging::{
             CallNextHookEx, GetMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HC_ACTION, HHOOK,
@@ -63,13 +65,28 @@ pub fn start_listener(sender: Sender<HotkeyNotification>) -> anyhow::Result<()> 
                 return;
             }
         };
+        // Clicks and wheel turns feed the Text Assist activity counter. Without
+        // the mouse hook only key-downs count (input_activity::mouse_tracking_active).
+        let mouse_hook = match input_activity::install_mouse_hook() {
+            Ok(mouse_hook) => Some(mouse_hook),
+            Err(err) => {
+                eprintln!("Could not install mouse activity hook: {err}");
+                None
+            }
+        };
         if ready_sender.send(Ok(())).is_err() {
+            if let Some(mouse_hook) = mouse_hook {
+                input_activity::uninstall_mouse_hook(mouse_hook);
+            }
             let _ = UnhookWindowsHookEx(hook);
             return;
         }
         let mut msg = MSG::default();
         // GetMessage returns -1 on error and zero on quit.
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {}
+        if let Some(mouse_hook) = mouse_hook {
+            input_activity::uninstall_mouse_hook(mouse_hook);
+        }
         let _ = UnhookWindowsHookEx(hook);
     });
     ready_receiver
@@ -113,6 +130,15 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
         reset_stale_state(now);
 
+        // Text Assist observes only real input; Vellora's own injected keys
+        // (signed in dwExtraInfo) neither count as activity nor form chords.
+        if !is_vellora_injected(info.dwExtraInfo) {
+            if is_down {
+                input_activity::record_key_down();
+            }
+            assist_chord::on_hook_key(vk, is_down, is_up, now);
+        }
+
         update_key_state(vk, is_down, is_up);
 
         let (ctrl_down, win_down) = modifier_state();
@@ -126,6 +152,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     }
 
     CallNextHookEx(HHOOK::default(), code, wparam, lparam)
+}
+
+fn is_vellora_injected(extra_info: usize) -> bool {
+    extra_info == input_activity::VELLORA_INPUT_SIGNATURE
 }
 
 fn update_key_state(vk: u32, is_down: bool, is_up: bool) {
@@ -150,6 +180,12 @@ fn reset_stale_state(now: Instant) {
     let mut last_event = last_event.lock().unwrap();
     if event_gap_is_stale(*last_event, now) {
         resync_modifier_state();
+        assist_chord::on_stale_resync(
+            physical_key_down(&[VK_LSHIFT, VK_RSHIFT]),
+            physical_key_down(&[VK_LWIN, VK_RWIN]),
+            physical_key_down(&[VK_LCONTROL, VK_RCONTROL]),
+            physical_key_down(&[VK_LMENU, VK_RMENU]),
+        );
         if let Some(machine) = MACHINE.get() {
             let mut machine = machine.lock().unwrap();
             if let Some(event) = machine.reset_stale_input(modifier_chord_is_down()) {
@@ -180,6 +216,11 @@ fn resync_modifier_state() {
             Ordering::SeqCst,
         );
     }
+}
+
+fn physical_key_down(keys: &[VIRTUAL_KEY]) -> bool {
+    keys.iter()
+        .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) } < 0)
 }
 
 fn modifier_chord_is_down() -> bool {
@@ -840,6 +881,13 @@ mod tests {
             Some(HotkeyEvent::HoldReleased)
         ));
         assert!(machine.update(false, false, release).is_none());
+    }
+
+    #[test]
+    fn only_vellora_signed_events_are_treated_as_injected() {
+        assert!(is_vellora_injected(input_activity::VELLORA_INPUT_SIGNATURE));
+        assert!(!is_vellora_injected(0));
+        assert!(!is_vellora_injected(1));
     }
 
     #[test]

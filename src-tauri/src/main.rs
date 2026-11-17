@@ -1,11 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assist_chord;
 mod audio;
 mod brand;
 mod clipboard;
 mod credentials;
 mod history;
 mod hotkey;
+mod input_activity;
 mod migration;
 mod openai;
 mod pricing;
