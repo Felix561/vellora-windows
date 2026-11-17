@@ -185,7 +185,20 @@ fn validate_text_assist(assist: &TextAssistSettings) -> anyhow::Result<()> {
         assist.ensemble_profiles.len() <= 20,
         "Text Assist allows at most 20 ensemble profiles"
     );
+    let mut profile_ids = HashSet::new();
     for profile in &assist.ensemble_profiles {
+        anyhow::ensure!(
+            is_identifier(&profile.id),
+            "Ensemble profile IDs must be 1 to 40 lowercase letters, digits, '-' or '_'"
+        );
+        anyhow::ensure!(
+            profile_ids.insert(profile.id.as_str()),
+            "Ensemble profile IDs must be unique"
+        );
+        anyhow::ensure!(
+            (1..=40).contains(&profile.name.trim().chars().count()),
+            "Ensemble profile names must be 1 to 40 characters"
+        );
         anyhow::ensure!(
             (1..=9).contains(&profile.members.len()),
             "Ensemble profiles need between 1 and 9 models"
@@ -679,8 +692,9 @@ mod tests {
                 with_assist(|a| {
                     a.ensemble_profiles = vec![
                         EnsembleProfile {
+                            id: "p".to_string(),
+                            name: "P".to_string(),
                             members: vec![model("m")],
-                            ..EnsembleProfile::default()
                         };
                         21
                     ]
@@ -688,14 +702,21 @@ mod tests {
             ),
             (
                 "empty profile",
-                with_assist(|a| a.ensemble_profiles.push(EnsembleProfile::default())),
+                with_assist(|a| {
+                    a.ensemble_profiles.push(EnsembleProfile {
+                        id: "p".to_string(),
+                        name: "P".to_string(),
+                        members: Vec::new(),
+                    })
+                }),
             ),
             (
                 "profile too large",
                 with_assist(|a| {
                     a.ensemble_profiles.push(EnsembleProfile {
+                        id: "p".to_string(),
+                        name: "P".to_string(),
                         members: vec![model("m"); 10],
-                        ..EnsembleProfile::default()
                     })
                 }),
             ),
@@ -703,8 +724,40 @@ mod tests {
                 "profile member",
                 with_assist(|a| {
                     a.ensemble_profiles.push(EnsembleProfile {
+                        id: "p".to_string(),
+                        name: "P".to_string(),
                         members: vec![model("")],
-                        ..EnsembleProfile::default()
+                    })
+                }),
+            ),
+            (
+                "profile id",
+                with_assist(|a| {
+                    a.ensemble_profiles.push(EnsembleProfile {
+                        id: "Bad Id".to_string(),
+                        name: "P".to_string(),
+                        members: vec![model("m")],
+                    })
+                }),
+            ),
+            (
+                "duplicate profile id",
+                with_assist(|a| {
+                    let profile = EnsembleProfile {
+                        id: "p".to_string(),
+                        name: "P".to_string(),
+                        members: vec![model("m")],
+                    };
+                    a.ensemble_profiles = vec![profile.clone(), profile];
+                }),
+            ),
+            (
+                "profile name",
+                with_assist(|a| {
+                    a.ensemble_profiles.push(EnsembleProfile {
+                        id: "p".to_string(),
+                        name: " ".to_string(),
+                        members: vec![model("m")],
                     })
                 }),
             ),
