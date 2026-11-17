@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Local Vellora windows may receive backend events; system operations stay in Rust commands.",
-  "windows": ["main", "overlay", "assist-halo"],
+  "windows": ["main", "overlay", "assist-halo", "assist-panel"],
   "local": true,
   "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

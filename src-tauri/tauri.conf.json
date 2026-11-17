@@ -52,6 +52,20 @@
         "shadow": false,
         "focus": false,
         "visible": false
+      },
+      {
+        "label": "assist-panel",
+        "title": "Vellora Rewrite",
+        "url": "index.html",
+        "width": 560,
+        "height": 420,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {
