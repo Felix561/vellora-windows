@@ -1,4 +1,11 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::{
+    text_assist::prompts::{BUILTIN_PRESETS, PRESET_POLISH},
+    text_providers::{Effort, ModelRef, ProviderKind},
+};
 
 /// Default dictation cleanup model. OpenAI names `gpt-6-luna` as the replacement for
 /// `gpt-5-nano`, which shuts down on December 11, 2026 (checked November 17, 2026).
@@ -23,6 +30,9 @@ pub struct AppSettings {
     pub save_history: bool,
     pub language: String,
     pub hotkey: String,
+    /// Text Assist block (spec section 7.1). Absent in files written before Text Assist.
+    #[serde(default)]
+    pub text_assist: TextAssistSettings,
 }
 
 impl Default for AppSettings {
@@ -39,8 +49,155 @@ impl Default for AppSettings {
             save_history: true,
             language: "auto".to_string(),
             hotkey: "Ctrl+Win".to_string(),
+            text_assist: TextAssistSettings::default(),
         }
     }
+}
+
+/// The only Text Assist chord supported so far. Stored for future configurability.
+pub const TEXT_ASSIST_CHORD: &str = "Shift+Win";
+/// Default Quick Polish model.
+pub const TEXT_ASSIST_QUICK_MODEL: &str = "gpt-6-luna";
+/// Second default favorite model (Tab cycling in the Rewrite panel).
+pub const TEXT_ASSIST_FAVORITE_MODEL: &str = "gpt-5.6-luna";
+
+/// Text Assist settings, nested as `textAssist` in `settings.json` (spec section 7.1).
+/// Every field falls back to its default, so partial blocks load.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TextAssistSettings {
+    pub enabled: bool,
+    pub chord: String,
+    pub hold_threshold_ms: u64,
+    pub quick_model: ModelRef,
+    pub presets: Vec<RewritePreset>,
+    pub last_preset_id: String,
+    pub favorite_models: Vec<ModelRef>,
+    pub ensemble_profiles: Vec<EnsembleProfile>,
+    /// Per-model color overrides keyed by [`ModelRef::color_key`].
+    pub model_colors: BTreeMap<String, String>,
+    pub save_history: bool,
+    pub limits: TextAssistLimits,
+    pub cli: CliBridges,
+    pub openai_compatible: Vec<CompatEndpoint>,
+    /// Last custom instructions, newest first (at most five).
+    pub custom_instructions: Vec<String>,
+    /// Developer-only offline uppercase engine instead of a provider.
+    pub dev_offline_transform: bool,
+}
+
+fn default_quick_model() -> ModelRef {
+    ModelRef::new(
+        ProviderKind::Openai,
+        TEXT_ASSIST_QUICK_MODEL,
+        Some(Effort::None),
+    )
+}
+
+impl Default for TextAssistSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            chord: TEXT_ASSIST_CHORD.to_string(),
+            hold_threshold_ms: 350,
+            quick_model: default_quick_model(),
+            presets: default_presets(),
+            last_preset_id: PRESET_POLISH.to_string(),
+            favorite_models: vec![
+                default_quick_model(),
+                ModelRef::new(
+                    ProviderKind::Openai,
+                    TEXT_ASSIST_FAVORITE_MODEL,
+                    Some(Effort::Low),
+                ),
+            ],
+            ensemble_profiles: Vec::new(),
+            model_colors: BTreeMap::new(),
+            save_history: true,
+            limits: TextAssistLimits::default(),
+            cli: CliBridges::default(),
+            openai_compatible: Vec::new(),
+            custom_instructions: Vec::new(),
+            dev_offline_transform: false,
+        }
+    }
+}
+
+/// The built-in presets (spec section 6.4) as editable settings entries.
+pub fn default_presets() -> Vec<RewritePreset> {
+    BUILTIN_PRESETS
+        .iter()
+        .map(|preset| RewritePreset {
+            id: preset.id.to_string(),
+            name: preset.name.to_string(),
+            instruction: preset.instruction.to_string(),
+            model: None,
+            color: None,
+            builtin: true,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RewritePreset {
+    pub id: String,
+    pub name: String,
+    pub instruction: String,
+    pub model: Option<ModelRef>,
+    pub color: Option<String>,
+    pub builtin: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EnsembleProfile {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<ModelRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TextAssistLimits {
+    pub quick_max_chars: usize,
+    pub panel_max_chars: usize,
+    pub ensemble_max_usd_per_run: f64,
+    pub paste_restore_delay_ms: u64,
+}
+
+impl Default for TextAssistLimits {
+    fn default() -> Self {
+        Self {
+            quick_max_chars: 8_000,
+            panel_max_chars: 30_000,
+            ensemble_max_usd_per_run: 0.05,
+            paste_restore_delay_ms: 400,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CliBridges {
+    pub codex: CliBridge,
+    pub claude: CliBridge,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CliBridge {
+    pub enabled: bool,
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CompatEndpoint {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -313,5 +470,145 @@ mod appearance_tests {
         let json = serde_json::to_string(&settings).unwrap();
         let loaded: AppSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.appearance, Appearance::Classic);
+    }
+}
+
+#[cfg(test)]
+mod text_assist_settings_tests {
+    use super::*;
+
+    /// A settings file as written by the current release: no `textAssist` key.
+    const RELEASE_SETTINGS_JSON: &str = r#"{
+  "appearance": "notebook",
+  "provider": "openai",
+  "sttModel": "gpt-4o-mini-transcribe",
+  "cleanupEnabled": true,
+  "cleanupMode": "light",
+  "cleanupModel": "gpt-6-luna",
+  "autoPaste": true,
+  "copyToClipboard": false,
+  "saveHistory": false,
+  "language": "de",
+  "hotkey": "Ctrl+Win"
+}"#;
+
+    #[test]
+    fn release_settings_without_text_assist_load_with_defaults() {
+        let loaded: AppSettings = serde_json::from_str(RELEASE_SETTINGS_JSON).unwrap();
+        assert_eq!(loaded.text_assist, TextAssistSettings::default());
+        assert_eq!(loaded.language, "de");
+        assert!(!loaded.save_history);
+        assert!(!loaded.copy_to_clipboard);
+    }
+
+    #[test]
+    fn defaults_match_the_plan() {
+        let settings = TextAssistSettings::default();
+        assert!(settings.enabled);
+        assert_eq!(settings.chord, "Shift+Win");
+        assert_eq!(settings.hold_threshold_ms, 350);
+        assert_eq!(
+            settings.quick_model,
+            ModelRef::new(ProviderKind::Openai, "gpt-6-luna", Some(Effort::None))
+        );
+        let ids: Vec<_> = settings.presets.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["polish", "clearer", "academic", "professional", "custom"]
+        );
+        assert!(settings.presets.iter().all(|p| p.builtin));
+        assert_eq!(settings.last_preset_id, "polish");
+        assert_eq!(
+            settings.favorite_models,
+            vec![
+                settings.quick_model.clone(),
+                ModelRef::new(ProviderKind::Openai, "gpt-5.6-luna", Some(Effort::Low)),
+            ]
+        );
+        assert!(settings.ensemble_profiles.is_empty());
+        assert!(settings.model_colors.is_empty());
+        assert!(settings.save_history);
+        assert_eq!(settings.limits.quick_max_chars, 8_000);
+        assert_eq!(settings.limits.panel_max_chars, 30_000);
+        assert_eq!(settings.limits.ensemble_max_usd_per_run, 0.05);
+        assert_eq!(settings.limits.paste_restore_delay_ms, 400);
+        assert!(!settings.cli.codex.enabled && settings.cli.codex.path.is_none());
+        assert!(!settings.cli.claude.enabled && settings.cli.claude.path.is_none());
+        assert!(settings.openai_compatible.is_empty());
+        assert!(settings.custom_instructions.is_empty());
+        assert!(!settings.dev_offline_transform);
+    }
+
+    #[test]
+    fn partial_text_assist_block_fills_missing_fields_from_defaults() {
+        let mut json: serde_json::Value = serde_json::from_str(RELEASE_SETTINGS_JSON).unwrap();
+        json["textAssist"] = serde_json::json!({
+            "enabled": false,
+            "holdThresholdMs": 500,
+            "limits": { "quickMaxChars": 4000 },
+            "cli": { "codex": { "enabled": true } },
+            "presets": [{ "id": "mine", "name": "Mine", "instruction": "Shorter." }],
+            "modelColors": { "openai/gpt-6-luna": "#112233" }
+        });
+        let loaded: AppSettings = serde_json::from_value(json).unwrap();
+        let assist = &loaded.text_assist;
+        let defaults = TextAssistSettings::default();
+        assert!(!assist.enabled);
+        assert_eq!(assist.hold_threshold_ms, 500);
+        assert_eq!(assist.limits.quick_max_chars, 4000);
+        assert_eq!(assist.limits.panel_max_chars, 30_000);
+        assert_eq!(assist.limits.paste_restore_delay_ms, 400);
+        assert!(assist.cli.codex.enabled);
+        assert!(assist.cli.codex.path.is_none());
+        assert!(!assist.cli.claude.enabled);
+        assert_eq!(assist.presets.len(), 1);
+        assert!(!assist.presets[0].builtin);
+        assert!(assist.presets[0].model.is_none());
+        assert_eq!(assist.model_colors["openai/gpt-6-luna"], "#112233");
+        assert_eq!(assist.chord, defaults.chord);
+        assert_eq!(assist.quick_model, defaults.quick_model);
+        assert_eq!(assist.favorite_models, defaults.favorite_models);
+        assert_eq!(assist.last_preset_id, defaults.last_preset_id);
+    }
+
+    #[test]
+    fn text_assist_uses_camel_case_keys_and_round_trips() {
+        let mut settings = AppSettings::default();
+        settings.text_assist.custom_instructions = vec!["Make it shorter".to_string()];
+        settings.text_assist.openai_compatible.push(CompatEndpoint {
+            id: "ollama".to_string(),
+            name: "Ollama".to_string(),
+            base_url: "http://127.0.0.1:11434/v1".to_string(),
+            models: vec!["llama3".to_string()],
+        });
+        let json = serde_json::to_value(&settings).unwrap();
+        let block = &json["textAssist"];
+        for key in [
+            "enabled",
+            "chord",
+            "holdThresholdMs",
+            "quickModel",
+            "presets",
+            "lastPresetId",
+            "favoriteModels",
+            "ensembleProfiles",
+            "modelColors",
+            "saveHistory",
+            "limits",
+            "cli",
+            "openaiCompatible",
+            "customInstructions",
+            "devOfflineTransform",
+        ] {
+            assert!(block.get(key).is_some(), "missing key {key}");
+        }
+        assert_eq!(block["limits"]["pasteRestoreDelayMs"], 400);
+        assert_eq!(
+            block["openaiCompatible"][0]["baseUrl"],
+            "http://127.0.0.1:11434/v1"
+        );
+        assert_eq!(block["cli"]["claude"]["path"], serde_json::Value::Null);
+        let back: AppSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(back.text_assist, settings.text_assist);
     }
 }
