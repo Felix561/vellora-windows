@@ -261,7 +261,7 @@
     "id": "informal-de-abend",
     "category": "informal",
     "input": "hey, kommst du heute abend noch vorbei? wär cool 😊",
-    "must_keep": ["heute Abend", "wär cool", "😊"],
+    "must_keep": ["heute Abend", "är cool", "😊"],
     "must_not_contain": ["wäre schön", "Hallo"],
     "already_correct": false
   },

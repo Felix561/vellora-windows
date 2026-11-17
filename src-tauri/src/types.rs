@@ -57,9 +57,10 @@ impl Default for AppSettings {
 /// The only Text Assist chord supported so far. Stored for future configurability.
 pub const TEXT_ASSIST_CHORD: &str = "Shift+Win";
 /// Default Quick Polish model.
-pub const TEXT_ASSIST_QUICK_MODEL: &str = "gpt-6-luna";
+/// Quick Polish default, chosen by the M3 benchmark (November 17, 2026): 100% exact, fastest.
+pub const TEXT_ASSIST_QUICK_MODEL: &str = "gpt-5.6-luna";
 /// Second default favorite model (Tab cycling in the Rewrite panel).
-pub const TEXT_ASSIST_FAVORITE_MODEL: &str = "gpt-5.6-luna";
+pub const TEXT_ASSIST_FAVORITE_MODEL: &str = "gpt-6-luna";
 
 /// Text Assist settings, nested as `textAssist` in `settings.json` (spec section 7.1).
 /// Every field falls back to its default, so partial blocks load.
@@ -509,7 +510,7 @@ mod text_assist_settings_tests {
         assert_eq!(settings.hold_threshold_ms, 350);
         assert_eq!(
             settings.quick_model,
-            ModelRef::new(ProviderKind::Openai, "gpt-6-luna", Some(Effort::None))
+            ModelRef::new(ProviderKind::Openai, "gpt-5.6-luna", Some(Effort::None))
         );
         let ids: Vec<_> = settings.presets.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
@@ -522,7 +523,7 @@ mod text_assist_settings_tests {
             settings.favorite_models,
             vec![
                 settings.quick_model.clone(),
-                ModelRef::new(ProviderKind::Openai, "gpt-5.6-luna", Some(Effort::Low)),
+                ModelRef::new(ProviderKind::Openai, "gpt-6-luna", Some(Effort::Low)),
             ]
         );
         assert!(settings.ensemble_profiles.is_empty());

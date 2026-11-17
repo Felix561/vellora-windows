@@ -603,6 +603,25 @@ Apps: Windows 11 Notepad, VS Code, TeXstudio, TeXmaker. Each row records the res
   owner's consent, because it makes paid calls. Results are saved locally, not committed with any
   personal data.
 
+### 9.4 M3 benchmark results (consented live run, November 17, 2026, 16:05 CET)
+
+47 synthetic samples (`src-tauri/tests/fixtures/polish_benchmark.json`), production prompt and
+token cap, 20 s budget, sequential, 141 requests, 0 errors, total cost about $0.0074.
+
+| Model / effort | Exact (25 with one answer) | False change on correct text | Guard pass | Invariants | p50 / p95 | p50 first token | Cost per sample |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `gpt-6-luna` / `none` | 96% (left "Standart" uncorrected) | 0% | 100% | 97.9%* | 1.25 / 2.53 s | 0.97 s | $0.000035 |
+| `gpt-6-luna` / `low` | 100% | 0% | 100% | 100% | 1.58 / 3.34 s | 1.39 s | $0.000048 |
+| `gpt-5.6-luna` / `none` | 100% | 0% | 100% | 97.9%* | **1.07 / 1.54 s** | **0.86 s** | $0.000075 |
+
+\* One invariant was too strict: "Wär cool" capitalized after a question mark is correct German.
+The fixture now accepts it.
+
+Decision: Quick Polish defaults to **`gpt-5.6-luna` with effort `none`** (fastest and fully
+correct; about $0.075 per 1,000 polishes). `gpt-6-luna` with effort `low` is the second favorite.
+Dictation cleanup keeps `gpt-6-luna` / `none` (M0). The live end-to-end run of the same day
+measured 1.6-3.1 s from tap to replaced text in Notepad, VS Code and TeXstudio.
+
 ## 10. Milestone roadmap
 
 Every milestone ends with:
