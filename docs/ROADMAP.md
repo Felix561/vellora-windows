@@ -54,6 +54,11 @@ Updated October 6, 2026 for the 0.2.21 public source beta. Windows remains the o
 
 ## P2: next beta
 
+Local feature design (approved November 17, 2026): [Text Assist](TEXT_ASSIST_PLAN.md)
+defines selected-text Quick Polish (tap Shift+Win), a Rewrite panel (hold), several
+text providers, personal-use subscription bridges and a model/effort ensemble, in
+milestones M0–M7. Its M0 resolves MODEL-03. Planned, not implemented or released.
+
 | ID | Task | Acceptance criteria |
 | --- | --- | --- |
 | GUI-02 | Microphone picker and live local test | Simple setup/key/hotkey/focus guidance and default-device availability check are implemented. Still add persisted input-device choice and a free local meter that verifies sound capture, with permission/device error feedback. |
