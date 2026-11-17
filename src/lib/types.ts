@@ -34,6 +34,144 @@ export type AppSettings = {
   saveHistory: boolean;
   language: "auto";
   hotkey: "Ctrl+Win";
+  /** Nested `textAssist` block (serde default on the Rust side). */
+  textAssist: TextAssistSettings;
+};
+
+/** Rust `ProviderKind` (snake_case). */
+export type TextProviderKind =
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "openai_compatible"
+  | "codex_cli"
+  | "claude_cli"
+  | "offline";
+
+/** Rust `Effort` (lowercase). */
+export type Effort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Rust `ModelRef`; `effort` and `endpoint` are omitted when unset. */
+export type ModelRef = {
+  provider: TextProviderKind;
+  model: string;
+  effort?: Effort | null;
+  endpoint?: string | null;
+};
+
+export type RewritePreset = {
+  id: string;
+  name: string;
+  instruction: string;
+  model: ModelRef | null;
+  color: string | null;
+  builtin: boolean;
+};
+
+export type EnsembleProfile = {
+  id: string;
+  name: string;
+  members: ModelRef[];
+};
+
+export type TextAssistLimits = {
+  quickMaxChars: number;
+  panelMaxChars: number;
+  ensembleMaxUsdPerRun: number;
+  pasteRestoreDelayMs: number;
+};
+
+export type CliBridge = {
+  enabled: boolean;
+  path: string | null;
+};
+
+export type CompatEndpoint = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  models: string[];
+};
+
+export type TextAssistSettings = {
+  enabled: boolean;
+  chord: string;
+  holdThresholdMs: number;
+  quickModel: ModelRef;
+  presets: RewritePreset[];
+  lastPresetId: string;
+  favoriteModels: ModelRef[];
+  ensembleProfiles: EnsembleProfile[];
+  /** Keyed by `provider/model`, e.g. `openai/gpt-6-luna`. */
+  modelColors: Record<string, string>;
+  saveHistory: boolean;
+  limits: TextAssistLimits;
+  cli: { codex: CliBridge; claude: CliBridge };
+  openaiCompatible: CompatEndpoint[];
+  /** Newest first, at most five. */
+  customInstructions: string[];
+  /** Developer-only offline uppercase engine (no network). */
+  devOfflineTransform: boolean;
+};
+
+export type TextAssistKind = "polish" | "rewrite" | "ensemble";
+
+export type TextAssistOutcome = "applied" | "no_change" | "kept" | "cancelled" | "failed";
+
+export type TextAssistBilling = "api" | "chatgpt_plan" | "claude_plan" | "local";
+
+/** Rust `history::TextAssistRun`. String fields are kept open for forward compatibility. */
+export type TextAssistRun = {
+  id: string;
+  createdAt: string;
+  kind: TextAssistKind | (string & {});
+  presetId: string | null;
+  ensembleRunId: string | null;
+  provider: TextProviderKind | (string & {});
+  model: string;
+  effort: Effort | (string & {}) | null;
+  billing: TextAssistBilling | (string & {});
+  originalText: string;
+  resultText: string | null;
+  outcome: TextAssistOutcome | (string & {});
+  /** Sanitized code such as `target_changed` or `guard_markup`. */
+  reasonCode: string | null;
+  /** Executable file name only. */
+  targetApp: string | null;
+  durationMs: number | null;
+  firstTokenMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  estimatedCostUsd: number | null;
+};
+
+export type TextAssistCostTotals = {
+  runs: number;
+  appliedRuns: number;
+  estimatedCostUsd: number;
+  estimatedCostTodayUsd: number;
+  /** Runs billed to a ChatGPT or Claude plan. */
+  planRuns: number;
+};
+
+/** A catalog model as shown in the model pickers. */
+export type TextModelInfo = {
+  provider: TextProviderKind;
+  id: string;
+  label: string;
+  efforts: Effort[];
+  defaultEffort: Effort | null;
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
+  color: string;
+  quickCandidate: boolean;
+  shutdown: string | null;
+};
+
+export type TextAssistOverview = {
+  totals: TextAssistCostTotals;
+  models: TextModelInfo[];
+  lastKept: TextAssistRun | null;
 };
 
 /** Submit changed fields; App merges and serializes writes against confirmed settings. */

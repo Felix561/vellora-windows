@@ -1,4 +1,13 @@
-import type { AppHealthSnapshot, AppSettings, DashboardStats, TranscriptHistoryItem } from "../../src/lib/types";
+import type {
+  AppHealthSnapshot,
+  AppSettings,
+  DashboardStats,
+  TextAssistOverview,
+  TextAssistRun,
+  TextAssistSettings,
+  TextModelInfo,
+  TranscriptHistoryItem,
+} from "../../src/lib/types";
 
 export function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -13,6 +22,82 @@ export function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     saveHistory: true,
     language: "auto",
     hotkey: "Ctrl+Win",
+    textAssist: textAssistSettings(),
+    ...overrides,
+  };
+}
+
+export function textAssistSettings(overrides: Partial<TextAssistSettings> = {}): TextAssistSettings {
+  return {
+    enabled: true,
+    chord: "Shift+Win",
+    holdThresholdMs: 350,
+    quickModel: { provider: "openai", model: "gpt-6-luna", effort: "none" },
+    presets: [],
+    lastPresetId: "polish",
+    favoriteModels: [{ provider: "openai", model: "gpt-6-luna", effort: "none" }],
+    ensembleProfiles: [],
+    modelColors: {},
+    saveHistory: true,
+    limits: { quickMaxChars: 8000, panelMaxChars: 30000, ensembleMaxUsdPerRun: 0.05, pasteRestoreDelayMs: 400 },
+    cli: { codex: { enabled: false, path: null }, claude: { enabled: false, path: null } },
+    openaiCompatible: [],
+    customInstructions: [],
+    devOfflineTransform: false,
+    ...overrides,
+  };
+}
+
+export function textModel(overrides: Partial<TextModelInfo> = {}): TextModelInfo {
+  return {
+    provider: "openai",
+    id: "gpt-6-luna",
+    label: "GPT-6 Luna",
+    efforts: ["none", "low", "medium"],
+    defaultEffort: "none",
+    inputUsdPerMillion: 0.2,
+    outputUsdPerMillion: 0.8,
+    color: "#5b8def",
+    quickCandidate: true,
+    shutdown: null,
+    ...overrides,
+  };
+}
+
+export function textAssistRun(overrides: Partial<TextAssistRun> = {}): TextAssistRun {
+  return {
+    id: "run-1",
+    createdAt: "2026-11-17T10:00:00Z",
+    kind: "polish",
+    presetId: null,
+    ensembleRunId: null,
+    provider: "openai",
+    model: "gpt-6-luna",
+    effort: "none",
+    billing: "api",
+    originalText: "Teh quick brown fox jump.",
+    resultText: "The quick brown fox jumps.",
+    outcome: "applied",
+    reasonCode: null,
+    targetApp: "notepad.exe",
+    durationMs: 1200,
+    firstTokenMs: 400,
+    inputTokens: 120,
+    outputTokens: 20,
+    estimatedCostUsd: 0.00004,
+    ...overrides,
+  };
+}
+
+export function textAssistOverview(overrides: Partial<TextAssistOverview> = {}): TextAssistOverview {
+  return {
+    totals: { runs: 0, appliedRuns: 0, estimatedCostUsd: 0, estimatedCostTodayUsd: 0, planRuns: 0 },
+    models: [
+      textModel({ id: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: ["low", "medium", "high"], defaultEffort: "low", quickCandidate: false, inputUsdPerMillion: 1, outputUsdPerMillion: 4 }),
+      textModel(),
+      textModel({ provider: "anthropic", id: "claude-haiku-5-5", label: "Claude Haiku 5.5", efforts: ["none"] }),
+    ],
+    lastKept: null,
     ...overrides,
   };
 }

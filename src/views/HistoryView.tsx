@@ -2,14 +2,43 @@ import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { clearTranscripts } from "../lib/api";
 import type { TranscriptHistoryItem } from "../lib/types";
+import { SectionTabs } from "./SectionTabs";
+import { TextAssistHistoryView } from "./TextAssistHistoryView";
 import { TranscriptActions } from "./TranscriptActions";
 
 type Props = {
   items: TranscriptHistoryItem[];
   onRefresh: () => Promise<void>;
+  /** `settings.textAssist.saveHistory`; decides when the "Result ready" banner appears. */
+  textAssistSaveHistory?: boolean;
 };
 
-export function HistoryView({ items, onRefresh }: Props) {
+type HistoryTab = "dictation" | "textAssist";
+
+const historyTabs: ReadonlyArray<{ id: HistoryTab; label: string }> = [
+  { id: "dictation", label: "Dictation" },
+  { id: "textAssist", label: "Text Assist" },
+];
+
+export function HistoryView({ items, onRefresh, textAssistSaveHistory = true }: Props) {
+  const [tab, setTab] = useState<HistoryTab>("dictation");
+  return (
+    <div className="history-stack">
+      <SectionTabs idPrefix="history" label="History sections" tabs={historyTabs} selected={tab} onSelect={setTab} />
+      {tab === "dictation" ? (
+        <div role="tabpanel" id="history-panel-dictation" aria-labelledby="history-tab-dictation">
+          <DictationHistory items={items} onRefresh={onRefresh} />
+        </div>
+      ) : (
+        <div role="tabpanel" id="history-panel-textAssist" aria-labelledby="history-tab-textAssist">
+          <TextAssistHistoryView saveHistory={textAssistSaveHistory} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DictationHistory({ items, onRefresh }: Omit<Props, "textAssistSaveHistory">) {
   const [busy, setBusy] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);

@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App";
 import { SETUP_STORAGE_KEY } from "../../src/lib/help";
-import { health, settings, stats } from "./fixtures";
+import { health, settings, stats, textAssistOverview } from "./fixtures";
 
 // Mock the native boundary, leaving the app and its API wrappers connected.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -26,6 +26,8 @@ beforeEach(() => {
       case "list_transcripts": return [];
       case "get_app_health": return health();
       case "get_dashboard_stats": return stats();
+      case "get_text_assist_overview": return textAssistOverview();
+      case "list_text_assist_runs": return [];
       case "get_support_info": return { version: "0.2.18", platform: "windows", architecture: "x86_64", startupPhase: "ready", ready: true, singleInstance: true, keyConfigured: keyStatus === true, microphoneAvailable: true, dictationState: "idle" };
       case "get_start_at_login": return false;
       default: throw new Error(`Unexpected native command in regression test: ${command}`);

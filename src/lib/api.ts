@@ -13,6 +13,8 @@ import type {
   HelpLinkId,
   SupportInfo,
   MicrophoneCheck,
+  TextAssistOverview,
+  TextAssistRun,
 } from "./types";
 
 export function getSettings() {
@@ -133,4 +135,29 @@ export function checkMicrophone() {
 
 export function openHelpLink(id: HelpLinkId) {
   return invoke<void>("open_help_link", { id });
+}
+
+export function listTextAssistRuns(limit = 100) {
+  return invoke<TextAssistRun[]>("list_text_assist_runs", { limit });
+}
+
+export function deleteTextAssistRun(id: string) {
+  return invoke<boolean>("delete_text_assist_run", { id });
+}
+
+export function clearTextAssistRuns() {
+  return invoke<number>("clear_text_assist_runs");
+}
+
+export function copyTextAssistText(text: string) {
+  return invoke<void>("copy_text_assist_text", { text });
+}
+
+export function getTextAssistOverview() {
+  return invoke<TextAssistOverview>("get_text_assist_overview");
+}
+
+/** Emitted to the main window after a Text Assist run is saved; the payload is the run id. */
+export function onTextAssistRunRecorded(handler: (runId: string) => void) {
+  return listen<string>("text-assist-run-recorded", (event) => handler(event.payload));
 }

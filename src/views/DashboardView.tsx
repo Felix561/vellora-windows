@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Clock3, Mic, ReceiptText, Sparkles } from "lucide-react";
+import { AlertCircle, CheckCircle2, Clock3, CreditCard, Mic, ReceiptText, Sparkles, SpellCheck, WandSparkles } from "lucide-react";
 import { getDashboardStats } from "../lib/api";
 import { BRAND } from "../lib/brand";
+import { formatTinyUsd, formatUsd } from "../lib/format";
+import { useTextAssistOverview } from "../lib/textAssist";
 import type {
   AppHealthSnapshot,
   AppSettings,
@@ -127,6 +129,8 @@ export function DashboardView({ settings, hasKey, keyStatusKnown = true, snapsho
 
       <CostPanel stats={stats} />
 
+      <TextAssistPanel />
+
       <section className="panel recent-panel">
         <div className="section-title">
           <div>
@@ -248,6 +252,39 @@ function CostPanel({ stats }: { stats: DashboardStats }) {
   );
 }
 
+/** Text Assist totals, kept separate from dictation spend (spec section 7.4). */
+function TextAssistPanel() {
+  const { overview, error } = useTextAssistOverview();
+  const totals = overview?.totals;
+  return (
+    <section className="panel ta-dashboard-panel" aria-labelledby="ta-dashboard-title">
+      <div className="section-title">
+        <div>
+          <h3 id="ta-dashboard-title">Text Assist</h3>
+          <p>Selection fixes / separate from dictation spend</p>
+        </div>
+        <SpellCheck size={20} aria-hidden="true" />
+      </div>
+      {error && <p className="error-text" role="alert">Could not load Text Assist totals: {error}</p>}
+      {!totals && !error && <p className="hint" role="status">Loading Text Assist totals...</p>}
+      {totals && (
+        <>
+          <div className="cost-metrics">
+            <Metric icon={<WandSparkles size={18} />} label="Runs" value={totals.runs.toLocaleString()} />
+            <Metric icon={<CheckCircle2 size={18} />} label="Applied" value={totals.appliedRuns.toLocaleString()} />
+            <Metric icon={<Clock3 size={18} />} label="Estimated today" value={formatUsd(totals.estimatedCostTodayUsd)} />
+            <Metric icon={<ReceiptText size={18} />} label="Estimated total" value={formatUsd(totals.estimatedCostUsd)} />
+            <Metric icon={<CreditCard size={18} />} label="Plan runs" value={totals.planRuns.toLocaleString()} />
+          </div>
+          <p className="cost-note">
+            Estimated from provider list prices and local Text Assist history. Estimates are not a billing ledger. Plan runs are billed to your subscription and add no API cost here.
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function SystemStatusPanel({
   hasKey,
   keyStatusKnown,
@@ -299,18 +336,6 @@ function SystemStatusPanel({
       )}
     </section>
   );
-}
-
-function formatUsd(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return "$0.00";
-  if (value < 0.01) return "<$0.01";
-  return `$${value.toFixed(2)}`;
-}
-
-function formatTinyUsd(value: number) {
-  if (!Number.isFinite(value) || value <= 0) return "$0";
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  return `$${value.toFixed(2)}`;
 }
 
 function formatMinutes(seconds: number) {

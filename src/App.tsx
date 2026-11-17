@@ -281,7 +281,7 @@ export default function App() {
             diagnostics={diagnostics}
           />
         )}
-        {tab === "history" && <HistoryView items={history} onRefresh={refresh} />}
+        {tab === "history" && <HistoryView items={history} onRefresh={refresh} textAssistSaveHistory={settings.textAssist?.saveHistory ?? true} />}
         {tab === "models" && <ModelsView settings={settings} onSettingsChange={updateSettings} />}
         {tab === "settings" && (
           <SettingsView

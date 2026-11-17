@@ -7,6 +7,8 @@ import {
   saveOpenAiApiKey,
 } from "../lib/api";
 import { AppearanceView } from "./AppearanceView";
+import { SectionTabs } from "./SectionTabs";
+import { TextAssistSettingsView } from "./TextAssistSettingsView";
 import { BRAND } from "../lib/brand";
 import type { AppSettings, SettingsChange, SttModel } from "../lib/types";
 
@@ -16,6 +18,14 @@ type Props = {
   onSettingsChange: SettingsChange;
   onKeyStatusChange: (hasKey: boolean) => void;
 };
+
+type SettingsTab = "general" | "textAssist" | "appearance";
+
+const settingsTabs: ReadonlyArray<{ id: SettingsTab; label: string }> = [
+  { id: "general", label: "General" },
+  { id: "textAssist", label: "Text Assist" },
+  { id: "appearance", label: "Appearance" },
+];
 
 const sttModels: Array<{ value: SttModel; label: string; hint: string }> = [
   {
@@ -41,7 +51,7 @@ const sttModels: Array<{ value: SttModel; label: string; hint: string }> = [
 ];
 
 export function SettingsView({ settings, hasKey, onSettingsChange, onKeyStatusChange }: Props) {
-  const [tab, setTab] = useState<"general" | "appearance">("general");
+  const [tab, setTab] = useState<SettingsTab>("general");
   const [draftKey, setDraftKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
@@ -115,27 +125,14 @@ export function SettingsView({ settings, hasKey, onSettingsChange, onKeyStatusCh
 
   return (
     <div className="settings-stack">
-      <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-        {(["general", "appearance"] as const).map((item) => (
-          <button key={item} id={`settings-tab-${item}`} role="tab"
-            aria-selected={tab === item} aria-controls={`settings-panel-${item}`}
-            tabIndex={tab === item ? 0 : -1}
-            onClick={() => setTab(item)}
-            onKeyDown={(event) => {
-              if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-                event.preventDefault();
-                const next = event.key === "Home" ? "general" : event.key === "End" ? "appearance" : tab === "general" ? "appearance" : "general";
-                setTab(next);
-                document.getElementById(`settings-tab-${next}`)?.focus();
-              }
-            }}>
-            {item === "general" ? "General" : "Appearance"}
-          </button>
-        ))}
-      </div>
+      <SectionTabs idPrefix="settings" label="Settings sections" tabs={settingsTabs} selected={tab} onSelect={setTab} />
       {tab === "appearance" ? (
         <div role="tabpanel" id="settings-panel-appearance" aria-labelledby="settings-tab-appearance">
           <AppearanceView settings={settings} onSettingsChange={onSettingsChange} />
+        </div>
+      ) : tab === "textAssist" ? (
+        <div role="tabpanel" id="settings-panel-textAssist" aria-labelledby="settings-tab-textAssist">
+          <TextAssistSettingsView settings={settings} hasKey={hasKey} onSettingsChange={onSettingsChange} />
         </div>
       ) : (
       <div className="settings-stack" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
