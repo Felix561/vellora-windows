@@ -65,6 +65,22 @@ impl OpenAiEngine {
         }
     }
 
+    /// Opens (or refreshes) the pooled HTTPS connection so the next request skips DNS and the
+    /// TLS handshake. Sends no key and no text; the response is ignored.
+    pub async fn warm_up(&self) {
+        let _ = self
+            .client
+            .head(format!("{}/models", self.base_url))
+            .timeout(Duration::from_secs(8))
+            .send()
+            .await;
+    }
+
+    /// True when this engine was built for `api_key`.
+    pub fn uses_key(&self, api_key: &str) -> bool {
+        self.api_key == api_key
+    }
+
     async fn run(
         &self,
         request: TextRequest,

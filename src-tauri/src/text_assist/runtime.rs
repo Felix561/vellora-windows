@@ -177,6 +177,11 @@ impl JobObserver<TargetSnapshot> for Presenter {
     fn update(&self, target: Option<&TargetSnapshot>, update: &JobUpdate) {
         let anchor = target.map_or_else(pointer_anchor, |target| target.anchor);
         let layout = layout_for(&anchor);
+        #[cfg(debug_assertions)]
+        if update.phase == Phase::Capturing {
+            // Geometry diagnostics for development builds only; contains no text.
+            eprintln!("text-assist anchor={anchor:?} layout={layout:?}");
+        }
         let payload = HaloPayload {
             job_id: update.job_id.clone(),
             phase: phase_name(update.phase),
@@ -238,7 +243,10 @@ fn model_label(model: &ModelRef) -> String {
         .unwrap_or_else(|| model.model.clone())
 }
 
-fn choose_engine(settings: &AppSettings) -> Result<EngineChoice, TextError> {
+fn choose_engine(
+    settings: &AppSettings,
+    openai: &Mutex<Option<Arc<OpenAiEngine>>>,
+) -> Result<EngineChoice, TextError> {
     if settings.text_assist.dev_offline_transform {
         let model = ModelRef::new(
             ProviderKind::Offline,
@@ -255,12 +263,7 @@ fn choose_engine(settings: &AppSettings) -> Result<EngineChoice, TextError> {
     let model = settings.text_assist.quick_model.clone();
     catalog::resolve_effort(&model)?;
     let engine: Arc<dyn TextEngine> = match model.provider {
-        ProviderKind::Openai => {
-            let key = credentials::get_openai_key()
-                .map_err(|_| TextError::MissingKey)?
-                .ok_or(TextError::MissingKey)?;
-            Arc::new(OpenAiEngine::new(key).map_err(|_| TextError::Network)?)
-        }
+        ProviderKind::Openai => openai_engine(openai)?,
         _ => return Err(TextError::Unsupported),
     };
     Ok(EngineChoice {
@@ -276,6 +279,25 @@ struct Runtime {
     halo: Halo,
     active: Mutex<Option<ActiveJob>>,
     last_kept: Arc<Mutex<Option<TextAssistRun>>>,
+    /// One OpenAI engine (and so one pooled HTTPS connection) reused across jobs.
+    openai: Arc<Mutex<Option<Arc<OpenAiEngine>>>>,
+    last_warm_up: Mutex<Option<Instant>>,
+}
+
+/// Minimum spacing between connection warm-ups.
+const WARM_UP_INTERVAL: Duration = Duration::from_secs(20);
+
+fn openai_engine(cache: &Mutex<Option<Arc<OpenAiEngine>>>) -> Result<Arc<OpenAiEngine>, TextError> {
+    let key = credentials::get_openai_key()
+        .map_err(|_| TextError::MissingKey)?
+        .ok_or(TextError::MissingKey)?;
+    let mut cache = cache.lock().unwrap();
+    if let Some(engine) = cache.as_ref().filter(|engine| engine.uses_key(&key)) {
+        return Ok(engine.clone());
+    }
+    let engine = Arc::new(OpenAiEngine::new(key).map_err(|_| TextError::Network)?);
+    *cache = Some(engine.clone());
+    Ok(engine)
 }
 
 impl Runtime {
@@ -306,6 +328,7 @@ impl Runtime {
                     }
                 }
                 Some(AssistChordEvent::Armed { press_id }) => {
+                    self.warm_up();
                     let threshold = (self.settings)().text_assist.hold_threshold_ms;
                     pending_hold =
                         Some((press_id, Instant::now() + Duration::from_millis(threshold)));
@@ -328,6 +351,31 @@ impl Runtime {
                 }
             }
         }
+    }
+
+    /// Pre-connects to the provider while Shift+Win is still down, so the request that follows
+    /// on release does not pay for DNS and the TLS handshake (about 8 s on a cold start here).
+    fn warm_up(&self) {
+        let settings = (self.settings)();
+        if !settings.text_assist.enabled
+            || settings.text_assist.dev_offline_transform
+            || settings.text_assist.quick_model.provider != ProviderKind::Openai
+        {
+            return;
+        }
+        {
+            let mut last = self.last_warm_up.lock().unwrap();
+            if last.is_some_and(|at| at.elapsed() < WARM_UP_INTERVAL) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        let cache = self.openai.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(engine) = openai_engine(&cache) {
+                engine.warm_up().await;
+            }
+        });
     }
 
     fn show_info(&self, phase: Phase, label: &str, color: &str) {
@@ -404,7 +452,7 @@ impl Runtime {
         if !settings.text_assist.enabled {
             return;
         }
-        let choice = match choose_engine(&settings) {
+        let choice = match choose_engine(&settings, &self.openai) {
             Ok(choice) => choice,
             Err(error) => {
                 let label = match error {
@@ -496,7 +544,11 @@ pub fn start(
         },
         active: Mutex::new(None),
         last_kept,
+        openai: Arc::new(Mutex::new(None)),
+        last_warm_up: Mutex::new(None),
     });
+    // Open the provider connection once at startup as well.
+    runtime.warm_up();
     thread::Builder::new()
         .name("text-assist".to_string())
         .spawn(move || runtime.run(receiver))?;
