@@ -2,6 +2,19 @@
 
 Vellora is a Windows-only early beta. Entries describe private review versions; they are not announcements of a public installer release. For validation and remaining release gates, see the [audit](docs/AUDIT.md) and [roadmap](docs/ROADMAP.md).
 
+## Unreleased (local) - November 17, 2026
+
+### Changed
+
+- Dictation cleanup now defaults to `gpt-6-luna`, OpenAI's documented replacement for `gpt-5-nano` (shutdown December 11, 2026). Cleanup requests to Luna models ask for reasoning effort `none`.
+- Saved settings that still use `gpt-5-nano-2025-08-07` move to `gpt-6-luna` on start; other preferences and history are unchanged.
+- Cost estimates use each note's own cleanup model rate and no longer price unknown cleanup models with GPT-5 nano rates; such notes are counted in the dashboard note instead.
+
+### Verification
+
+- Added settings migration, request and pricing regressions, plus an ignored, consent-gated live comparison test for the cleanup candidates.
+- A consented live comparison (24 synthetic requests, about $0.0013) found `gpt-6-luna` at effort `none` as accurate as effort `low` and as `gpt-5.6-luna`, at the lowest cost.
+
 ## Public source opening - October 6, 2026
 
 - Published a clean-history Windows source beta under MIT as `Felix561/vellora-windows`; the development archive stays private.

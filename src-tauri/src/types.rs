@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+/// Default dictation cleanup model. OpenAI names `gpt-6-luna` as the replacement for
+/// `gpt-5-nano`, which shuts down on December 11, 2026 (checked November 17, 2026).
+pub const DEFAULT_CLEANUP_MODEL: &str = "gpt-6-luna";
+
+/// Cleanup model IDs that OpenAI retired or scheduled for shutdown. Saved settings that
+/// still use one of them are migrated to [`DEFAULT_CLEANUP_MODEL`] on load.
+pub const RETIRED_CLEANUP_MODELS: &[&str] = &["gpt-5-nano-2025-08-07", "gpt-5-nano"];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -25,7 +33,7 @@ impl Default for AppSettings {
             stt_model: SttModel::Whisper1,
             cleanup_enabled: false,
             cleanup_mode: FixedCleanupMode::Light,
-            cleanup_model: "gpt-5-nano-2025-08-07".to_string(),
+            cleanup_model: DEFAULT_CLEANUP_MODEL.to_string(),
             auto_paste: true,
             copy_to_clipboard: true,
             save_history: true,
@@ -201,6 +209,9 @@ pub struct CostSummary {
     pub estimated_audio_seconds: u64,
     pub estimated_from_words_count: usize,
     pub unknown_model_count: usize,
+    /// Cleanup runs whose model has no known price; their cleanup cost is not included.
+    #[serde(default)]
+    pub unknown_cleanup_model_count: usize,
     pub week: Vec<DailyCostStat>,
     pub model_breakdown: Vec<ModelCostStat>,
     pub note: String,

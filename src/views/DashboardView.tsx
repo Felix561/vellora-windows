@@ -34,7 +34,7 @@ const emptyStats: DashboardStats = {
   week: [],
   modelUsage: [],
   cost: {
-    pricingVersion: "openai-pricing-2026-05-29",
+    pricingVersion: "openai-pricing-2026-11-17",
     estimatedTotalUsd: 0,
     estimatedTodayUsd: 0,
     estimatedWeekUsd: 0,
@@ -45,6 +45,7 @@ const emptyStats: DashboardStats = {
     estimatedAudioSeconds: 0,
     estimatedFromWordsCount: 0,
     unknownModelCount: 0,
+    unknownCleanupModelCount: 0,
     week: [],
     modelBreakdown: [],
     note: "Estimated from OpenAI public pricing and local Vellora history. Not official billing data.",
@@ -241,6 +242,7 @@ function CostPanel({ stats }: { stats: DashboardStats }) {
       <p className="cost-note">
         {cost.note}
         {cost.estimatedFromWordsCount > 0 && ` ${cost.estimatedFromWordsCount} older notes estimated from word count.`}
+        {cost.unknownCleanupModelCount > 0 && ` Cleanup cost excluded for ${cost.unknownCleanupModelCount} ${cost.unknownCleanupModelCount === 1 ? "note" : "notes"} with an unpriced model.`}
       </p>
     </section>
   );

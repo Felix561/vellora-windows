@@ -6,7 +6,10 @@ use std::{
 
 use anyhow::Context;
 
-use crate::{brand, types::AppSettings};
+use crate::{
+    brand,
+    types::{AppSettings, DEFAULT_CLEANUP_MODEL, RETIRED_CLEANUP_MODELS},
+};
 
 const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
 
@@ -57,7 +60,14 @@ fn load_settings_from(path: &Path) -> anyhow::Result<(AppSettings, Option<String
             })
     };
     match parsed {
-        Ok(settings) => Ok((settings, None)),
+        Ok(mut settings) => {
+            if migrate_settings(&mut settings) {
+                // Persist deliberate migrations so the file states the model in use.
+                // A failed write keeps the migrated value for this session only.
+                let _ = save_settings_to(path, &settings);
+            }
+            Ok((settings, None))
+        }
         Err(_) => {
             let backup =
                 path.with_file_name(format!("settings-invalid-{}.json", uuid::Uuid::new_v4()));
@@ -75,6 +85,16 @@ fn load_settings_from(path: &Path) -> anyhow::Result<(AppSettings, Option<String
 pub fn save_settings(settings: &AppSettings) -> anyhow::Result<()> {
     let path = settings_path()?;
     save_settings_to(&path, settings)
+}
+
+/// Applies deliberate upgrades to settings saved by older versions. Returns true when
+/// anything changed. Only retired values are replaced; other preferences stay as saved.
+pub fn migrate_settings(settings: &mut AppSettings) -> bool {
+    if RETIRED_CLEANUP_MODELS.contains(&settings.cleanup_model.as_str()) {
+        settings.cleanup_model = DEFAULT_CLEANUP_MODEL.to_string();
+        return true;
+    }
+    false
 }
 
 pub fn validate_settings(settings: &AppSettings) -> anyhow::Result<()> {
@@ -141,6 +161,48 @@ mod tests {
         assert_eq!(loaded.language, "de");
         assert!(warning.is_none());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn retired_cleanup_model_migrates_and_keeps_other_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let saved = AppSettings {
+            language: "de".to_string(),
+            cleanup_enabled: true,
+            save_history: false,
+            cleanup_model: "gpt-5-nano-2025-08-07".to_string(),
+            ..AppSettings::default()
+        };
+        save_settings_to(&path, &saved).unwrap();
+        let (loaded, warning) = load_settings_from(&path).unwrap();
+        assert!(warning.is_none());
+        assert_eq!(loaded.cleanup_model, DEFAULT_CLEANUP_MODEL);
+        assert_eq!(loaded.language, "de");
+        assert!(loaded.cleanup_enabled);
+        assert!(!loaded.save_history);
+        // The migration is written back, so the next load is already current.
+        let on_disk: AppSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk.cleanup_model, DEFAULT_CLEANUP_MODEL);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn migration_leaves_current_and_custom_cleanup_models_unchanged() {
+        for model in [DEFAULT_CLEANUP_MODEL, "gpt-5.6-luna", "my-custom-model"] {
+            let mut settings = AppSettings {
+                cleanup_model: model.to_string(),
+                ..AppSettings::default()
+            };
+            assert!(!migrate_settings(&mut settings));
+            assert_eq!(settings.cleanup_model, model);
+        }
+        let mut settings = AppSettings {
+            cleanup_model: "gpt-5-nano".to_string(),
+            ..AppSettings::default()
+        };
+        assert!(migrate_settings(&mut settings));
+        assert_eq!(settings.cleanup_model, DEFAULT_CLEANUP_MODEL);
     }
 
     #[test]

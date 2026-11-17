@@ -6,7 +6,7 @@ use crate::types::{
     CleanupMode, CostSummary, DailyCostStat, ModelCostStat, SttModel, TranscriptHistoryItem,
 };
 
-pub const PRICING_VERSION: &str = "openai-pricing-2026-05-29";
+pub const PRICING_VERSION: &str = "openai-pricing-2026-11-17";
 const WORDS_PER_AUDIO_MINUTE: f64 = 150.0;
 const MIN_RELIABLE_RECORDING_MS: u64 = 1_000;
 
@@ -28,6 +28,7 @@ pub fn calculate_cost_summary(items: &[TranscriptHistoryItem], today: NaiveDate)
     let mut estimated_audio_seconds = 0u64;
     let mut estimated_from_words_count = 0usize;
     let mut unknown_model_count = 0usize;
+    let mut unknown_cleanup_model_count = 0usize;
 
     for item in items {
         let created_date = chrono::DateTime::parse_from_rfc3339(&item.created_at)
@@ -49,7 +50,13 @@ pub fn calculate_cost_summary(items: &[TranscriptHistoryItem], today: NaiveDate)
         };
 
         let transcription_cost = (duration.audio_seconds as f64 / 60.0) * price_per_minute;
-        let cleanup_cost = cleanup_cost(item);
+        let cleanup_cost = match cleanup_cost(item) {
+            Some(cost) => cost,
+            None => {
+                unknown_cleanup_model_count += 1;
+                0.0
+            }
+        };
         let total_cost = transcription_cost + cleanup_cost;
 
         estimated_total_usd += total_cost;
@@ -114,6 +121,7 @@ pub fn calculate_cost_summary(items: &[TranscriptHistoryItem], today: NaiveDate)
         estimated_audio_seconds,
         estimated_from_words_count,
         unknown_model_count,
+        unknown_cleanup_model_count,
         week,
         model_breakdown,
         note: "Estimated from OpenAI public pricing and local Vellora history. Not official billing data.".to_string(),
@@ -150,28 +158,35 @@ fn billable_audio_duration(item: &TranscriptHistoryItem) -> AudioDurationEstimat
     }
 }
 
-fn cleanup_cost(item: &TranscriptHistoryItem) -> f64 {
+/// Estimated cleanup cost, or `None` when the cleanup model has no known price.
+fn cleanup_cost(item: &TranscriptHistoryItem) -> Option<f64> {
     if item.cleanup_mode != CleanupMode::Light {
-        return 0.0;
+        return Some(0.0);
     }
 
     let Some(model) = item.cleanup_model.as_deref() else {
-        return 0.0;
+        return Some(0.0);
     };
 
-    let (input_per_million, output_per_million) = cleanup_prices(model);
+    let (input_per_million, output_per_million) = cleanup_prices(model)?;
     let raw_words = item.raw_text.split_whitespace().count();
     let final_words = item.final_text.split_whitespace().count();
     let input_tokens = ((raw_words as f64) * 1.33).ceil() + 120.0;
     let output_tokens = ((final_words as f64) * 1.33).ceil();
-    (input_tokens / 1_000_000.0 * input_per_million)
-        + (output_tokens / 1_000_000.0 * output_per_million)
+    Some(
+        (input_tokens / 1_000_000.0 * input_per_million)
+            + (output_tokens / 1_000_000.0 * output_per_million),
+    )
 }
 
-fn cleanup_prices(model: &str) -> (f64, f64) {
+/// Standard USD prices per million uncached input and output tokens, checked
+/// November 17, 2026. Historical rows keep the rate of the model they used.
+fn cleanup_prices(model: &str) -> Option<(f64, f64)> {
     match model {
-        "gpt-5-nano-2025-08-07" | "gpt-5-nano" => (0.05, 0.40),
-        _ => (0.05, 0.40),
+        "gpt-6-luna" => Some((0.10, 0.50)),
+        "gpt-5.6-luna" => Some((0.20, 1.20)),
+        "gpt-5-nano-2025-08-07" | "gpt-5-nano" => Some((0.05, 0.40)),
+        _ => None,
     }
 }
 
@@ -224,6 +239,50 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 5, 29).unwrap(),
         );
         assert!((stats.estimated_total_usd - 0.03).abs() < 0.0001);
+    }
+
+    fn cleanup_item(model: &str) -> TranscriptHistoryItem {
+        let mut row = item(SttModel::Whisper1, Some(60_000), 100);
+        row.cleanup_mode = CleanupMode::Light;
+        row.cleanup_model = Some(model.to_string());
+        row.raw_text = "word ".repeat(1_000);
+        row.final_text = "word ".repeat(1_000);
+        row
+    }
+
+    #[test]
+    fn cleanup_uses_the_rate_of_the_model_each_row_used() {
+        let today = NaiveDate::from_ymd_opt(2026, 5, 29).unwrap();
+        // 1,000 words -> 1,330 input tokens + 120 prompt tokens, 1,330 output tokens.
+        let cases = [
+            ("gpt-6-luna", 1_450.0 * 0.10 / 1e6 + 1_330.0 * 0.50 / 1e6),
+            ("gpt-5.6-luna", 1_450.0 * 0.20 / 1e6 + 1_330.0 * 1.20 / 1e6),
+            (
+                "gpt-5-nano-2025-08-07",
+                1_450.0 * 0.05 / 1e6 + 1_330.0 * 0.40 / 1e6,
+            ),
+        ];
+        for (model, expected) in cases {
+            let stats = calculate_cost_summary(&[cleanup_item(model)], today);
+            assert!(
+                (stats.estimated_cleanup_usd - expected).abs() < 1e-9,
+                "{model}: {} != {expected}",
+                stats.estimated_cleanup_usd
+            );
+            assert_eq!(stats.unknown_cleanup_model_count, 0);
+        }
+    }
+
+    #[test]
+    fn unknown_cleanup_model_is_counted_not_priced_as_another_model() {
+        let stats = calculate_cost_summary(
+            &[cleanup_item("my-custom-model")],
+            NaiveDate::from_ymd_opt(2026, 5, 29).unwrap(),
+        );
+        assert_eq!(stats.unknown_cleanup_model_count, 1);
+        assert_eq!(stats.estimated_cleanup_usd, 0.0);
+        // Transcription is still estimated for the row.
+        assert!((stats.estimated_transcription_usd - 0.006).abs() < 1e-9);
     }
 
     #[test]
