@@ -68,7 +68,7 @@ Updated October 6, 2026 for the 0.2.21 public source beta. Windows remains the o
 
 | ID | Task | Acceptance criteria |
 | --- | --- | --- |
-| MODEL-03 | Replace retiring cleanup snapshot before December 11, 2026 | Review/test by November 20; preserve user choice, validate account/API/quality/retries, migrate settings/history safely and update exact pricing/support fields. See [MODEL_LIFECYCLE.md](MODEL_LIFECYCLE.md). |
+| MODEL-03 | Replace retiring cleanup snapshot before December 11, 2026 | **Implemented locally November 17, 2026** (`gpt-6-luna`, effort `none`, settings migration, per-model pricing). Live comparison done (results in MODEL_LIFECYCLE.md). Remaining: an installed-build check before December 11. See [MODEL_LIFECYCLE.md](MODEL_LIFECYCLE.md). |
 | MODEL-04 | Replace retiring transcription models before February 26, 2027 | Review/test by February 1; completed-file uploads can remain, but model enums/language hints/response parsing/access/pricing all need verified migration. No live accuracy claim without dummy-clip evidence. |
 
 ## Before changing repository visibility

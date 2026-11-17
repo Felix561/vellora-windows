@@ -27,7 +27,8 @@ export type AppSettings = {
   sttModel: SttModel;
   cleanupEnabled: boolean;
   cleanupMode: "light";
-  cleanupModel: "gpt-5-nano-2025-08-07";
+  /** OpenAI model ID; defaults to gpt-6-luna. Older saved IDs are migrated on load. */
+  cleanupModel: string;
   autoPaste: boolean;
   copyToClipboard: boolean;
   saveHistory: boolean;
@@ -176,6 +177,7 @@ export type CostSummary = {
   estimatedAudioSeconds: number;
   estimatedFromWordsCount: number;
   unknownModelCount: number;
+  unknownCleanupModelCount: number;
   week: DailyCostStat[];
   modelBreakdown: ModelCostStat[];
   note: string;
