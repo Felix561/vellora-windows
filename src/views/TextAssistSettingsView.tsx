@@ -3,13 +3,16 @@ import { Check } from "lucide-react";
 import {
   PASTE_RESTORE_DELAY_MS,
   QUICK_MAX_CHARS,
+  catalogGroupLabel,
   catalogOptionLabel,
   effortForModel,
   effortLabel,
   findCatalogModel,
   groupCatalogModels,
   modelOptionValue,
+  isCliProvider,
   modelRef,
+  needsBridge,
   needsKey,
   parseModelOptionValue,
   providerLabel,
@@ -51,9 +54,10 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
   useEffect(() => { setDelayDraft(String(assist.limits.pasteRestoreDelayMs)); }, [assist.limits.pasteRestoreDelayMs]);
 
   const models = useMemo(() => overview?.models ?? [], [overview]);
-  const groups = useMemo(() => groupCatalogModels(models), [models]);
+  const groups = useMemo(() => groupCatalogModels(models, assist.cli), [models, assist.cli]);
   const quickModel = assist.quickModel;
   const current = findCatalogModel(models, quickModel);
+  const offered = groups.some((group) => group.models.some((model) => model === current));
   // The OpenAI key status comes from App (it changes in Settings, General); the others from Credential Manager.
   const missingKey = (provider: TextProviderKind) => (provider === "openai" ? !hasKey : needsKey({ provider }, keys));
   const efforts: Effort[] = current ? current.efforts : quickModel.effort ? [quickModel.effort] : [];
@@ -95,8 +99,10 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
     });
   }
 
+  const quickIsBridge = isCliProvider(quickModel.provider);
+  const quickBridgeOff = !assist.devOfflineTransform && needsBridge(quickModel, assist.cli);
   const quickNeedsKey = !assist.devOfflineTransform && missingKey(quickModel.provider);
-  const quickHasKey = quickModel.provider === "openai" ? hasKey : keys ? !needsKey(quickModel, keys) : false;
+  const quickHasKey = !quickIsBridge && (quickModel.provider === "openai" ? hasKey : keys ? !needsKey(quickModel, keys) : false);
 
   return (
     <div className="settings-stack">
@@ -107,9 +113,11 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
         <div className="section-title">
           <div>
             <h3 id={`${ids}-title`}>Text Assist</h3>
-            <p>{quickHasKey
-              ? `Uses the ${providerLabel(quickModel.provider)} key stored in Windows Credential Manager`
-              : `Requires a key for ${providerLabel(quickModel.provider)}`}</p>
+            <p>{quickIsBridge
+              ? `Uses your ${catalogGroupLabel(quickModel.provider)} ($0 marginal)`
+              : quickHasKey
+                ? `Uses the ${providerLabel(quickModel.provider)} key stored in Windows Credential Manager`
+                : `Requires a key for ${providerLabel(quickModel.provider)}`}</p>
           </div>
           {quickHasKey && <Check size={18} aria-hidden="true" />}
         </div>
@@ -122,6 +130,11 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
           Select text in any app and tap <kbd>Shift</kbd>+<kbd>Win</kbd> to fix spelling, grammar and punctuation in place.
           Hold <kbd>Shift</kbd>+<kbd>Win</kbd> for the Rewrite panel (coming soon).
         </p>
+        {quickBridgeOff && (
+          <p className="warning-text ta-key-note">
+            Quick Polish uses a {providerLabel(quickModel.provider)} model, but that subscription bridge is off. Turn it on under AI Models, Text models, Subscription bridges, or choose another model.
+          </p>
+        )}
         {quickNeedsKey && (
           <p className="warning-text ta-key-note">
             {quickModel.provider === "openai"
@@ -139,8 +152,9 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
             aria-describedby={`${ids}-model-hint`}
             onChange={(event) => selectModel(event.target.value)}>
             {!current && <option value={modelOptionValue(quickModel)}>{quickModel.model}{overview ? " (not in the model list)" : ""}</option>}
+            {current && !offered && <option value={modelOptionValue(quickModel)}>{current.label} (subscription bridge off)</option>}
             {groups.map((group) => (
-              <optgroup key={group.provider} label={providerLabel(group.provider)}>
+              <optgroup key={group.provider} label={catalogGroupLabel(group.provider)}>
                 {group.models.map((model) => (
                   <option key={model.id} value={modelOptionValue({ provider: model.provider, model: model.id })}>
                     {catalogOptionLabel(model, missingKey(model.provider))}{model.quickCandidate ? " (recommended)" : ""}
@@ -161,6 +175,7 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
         <p className="hint" id={`${ids}-model-hint`}>
           {!overview && !modelsError ? "Loading the model list..."
             : current?.shutdown ? `${current.label} retires on ${current.shutdown}. Choose another model before then.`
+              : quickIsBridge ? "Plan models run through a command-line tool and take several seconds; not recommended for Quick Polish."
               : "Recommended models are fast and inexpensive. Prices are provider list prices per million tokens. Lower effort answers faster; Quick Polish rarely needs more than low."}
         </p>
         {modelsError && <p className="error-text" role="alert">Could not load the model list: {modelsError}</p>}

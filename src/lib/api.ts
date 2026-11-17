@@ -17,6 +17,7 @@ import type {
   TextAssistRun,
   TextProviderKeys,
   KeyedTextProvider,
+  TextCliStatus,
 } from "./types";
 
 export function getSettings() {
@@ -176,4 +177,9 @@ export function saveTextProviderKey(provider: KeyedTextProvider, endpointId: str
 
 export function deleteTextProviderKey(provider: KeyedTextProvider, endpointId: string | null) {
   return invoke<void>("delete_text_provider_key", { provider, endpointId });
+}
+
+/** Installed/version/signed-in status of the Codex and Claude Code CLIs. Makes no model request; can take ~20 s. */
+export function getTextCliStatus() {
+  return invoke<TextCliStatus>("get_text_cli_status");
 }

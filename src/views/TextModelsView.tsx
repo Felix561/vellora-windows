@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { deleteTextProviderKey, saveTextProviderKey } from "../lib/api";
+import { CliBridgesSection } from "./CliBridgesSection";
 import { EnsembleProfilesSection, ModelOptions } from "./EnsembleProfilesSection";
 import {
   MAX_ENDPOINTS,
@@ -21,8 +22,10 @@ import {
   modelRef,
   modelRefLabel,
   moveFavorite,
+  needsBridge,
   needsKey,
   parseModelOptionValue,
+  planBillingLabel,
   providerLabel,
   pruneModelColors,
   removeFavorite,
@@ -52,7 +55,7 @@ type Props = {
   onSettingsChange: SettingsChange;
 };
 
-type Section = "endpoints" | "favorites" | "profiles" | "colors";
+type Section = "bridges" | "endpoints" | "favorites" | "profiles" | "colors";
 type Feedback = { text: string; error: boolean };
 type SectionFeedback = Feedback & { section: Section };
 type Save = (section: Section, patch: Partial<TextAssistSettings>, success: string) => Promise<boolean>;
@@ -63,7 +66,7 @@ const providerPrivacy: Record<"openai" | "anthropic" | "gemini", string> = {
   gemini: "Free tier: Google may use the text you send to improve its products. Paid tier (billing enabled for the key's project): it does not.",
 };
 
-/** Models -> Text models: provider keys, OpenAI-compatible endpoints, favorites and colors. */
+/** Models -> Text models: provider keys, subscription bridges, OpenAI-compatible endpoints, favorites and colors. */
 export function TextModelsView({ settings, onSettingsChange }: Props) {
   const assist = settings.textAssist;
   const { overview, error: modelsError } = useTextAssistOverview();
@@ -100,6 +103,7 @@ export function TextModelsView({ settings, onSettingsChange }: Props) {
       {modelsError && <p className="error-text" role="alert">Could not load the model list: {modelsError}</p>}
       {keysError && <p className="error-text" role="alert">Could not read which keys are saved: {keysError}</p>}
       <ProviderKeys keys={keys} onChanged={() => void reloadKeys()} />
+      <CliBridgesSection assist={assist} busy={busy} save={(patch, success) => save("bridges", patch, success)} feedback={feedbackFor("bridges")} />
       <Endpoints assist={assist} keys={keys} busy={busy} save={save} report={report}
         feedback={feedbackFor("endpoints")} onKeysChanged={() => void reloadKeys()} />
       <Favorites assist={assist} catalog={catalog} loading={!overview && !modelsError} keys={keys} busy={busy}
@@ -525,6 +529,7 @@ function Favorites({ assist, catalog, loading, keys, busy, save, report, feedbac
   }
 
   const missingKey = (provider: ModelRef["provider"]) => needsKey({ provider }, keys);
+  const bridgeOff = (provider: ModelRef["provider"]) => needsBridge({ provider }, assist.cli);
 
   return (
     <section className="panel" aria-labelledby={`${ids}-title`}>
@@ -544,6 +549,7 @@ function Favorites({ assist, catalog, loading, keys, busy, save, report, feedbac
             const endpoint = ref.provider === "openai_compatible" ? endpoints.find((item) => item.id === ref.endpoint) : null;
             const efforts = model?.efforts ?? [];
             const keyMissing = missingKey(ref.provider);
+            const plan = planBillingLabel(ref.provider);
             return (
               <li key={`${index}-${modelOptionValue(ref)}-${ref.effort ?? ""}`} className="ta-favorite">
                 <span className="ta-swatch" style={{ background: modelColorFor(ref, assist.modelColors, catalog) }} aria-hidden="true" />
@@ -551,7 +557,9 @@ function Favorites({ assist, catalog, loading, keys, busy, save, report, feedbac
                   <strong>{index + 1}. {modelRefLabel(ref, catalog)}</strong>
                   <span className="ta-favorite-meta">
                     {ref.provider === "openai_compatible" ? `${endpoint?.name ?? ref.endpoint ?? "Unknown endpoint"} (OpenAI-compatible)` : providerLabel(ref.provider)}
+                    {plan && " · $0 marginal"}
                     {keyMissing && <span className="warning-text ta-needs-key"> · needs key</span>}
+                    {bridgeOff(ref.provider) && <span className="warning-text ta-needs-key"> · bridge off</span>}
                   </span>
                 </span>
                 {efforts.length > 0 ? (
@@ -589,7 +597,7 @@ function Favorites({ assist, catalog, loading, keys, busy, save, report, feedbac
           <span>Model</span>
           <select value={choice} disabled={busy || full} onChange={(event) => selectChoice(event.target.value)}>
             <option value="">{loading ? "Loading models..." : "Choose a model"}</option>
-            <ModelOptions catalog={catalog} endpoints={endpoints} keys={keys} />
+            <ModelOptions catalog={catalog} endpoints={endpoints} keys={keys} cli={assist.cli} />
           </select>
         </label>
         <label className="field">

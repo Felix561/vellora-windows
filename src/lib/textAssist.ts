@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getTextAssistOverview, getTextProviderKeys, onTextAssistRunRecorded } from "./api";
+import { getTextAssistOverview, getTextCliStatus, getTextProviderKeys, onTextAssistRunRecorded } from "./api";
 import type {
+  CliBridges,
   CompatEndpoint,
   Effort,
   EnsembleProfile,
@@ -8,6 +9,7 @@ import type {
   TextAssistOverview,
   TextAssistRun,
   TextAssistSettings,
+  TextCliStatus,
   TextModelInfo,
   TextProviderKeys,
   TextProviderKind,
@@ -364,6 +366,96 @@ export function needsKey(ref: Pick<ModelRef, "provider">, keys: TextProviderKeys
   }
 }
 
+// ---------------------------------------------------------------------------
+// Subscription bridges (Codex CLI, Claude Code). Personal use; billed to the user's plan.
+// ---------------------------------------------------------------------------
+
+export const CLI_PROVIDERS = ["codex_cli", "claude_cli"] as const satisfies readonly TextProviderKind[];
+export type CliProvider = (typeof CLI_PROVIDERS)[number];
+export type CliBridgeName = keyof CliBridges;
+
+/** Rust settings limit for a custom CLI path. */
+export const MAX_CLI_PATH = 260;
+
+export function isCliProvider(provider: string): provider is CliProvider {
+  return provider === "codex_cli" || provider === "claude_cli";
+}
+
+/** Settings key of the bridge that serves `provider`, or null for API providers. */
+export function cliBridgeName(provider: string): CliBridgeName | null {
+  if (provider === "codex_cli") return "codex";
+  if (provider === "claude_cli") return "claude";
+  return null;
+}
+
+/** "ChatGPT plan" / "Claude plan" for bridge providers, else null. */
+export function planBillingLabel(provider: string) {
+  return isCliProvider(provider) ? providerLabel(provider) : null;
+}
+
+/** Model picker group label: the provider, or "ChatGPT plan via Codex CLI" for a bridge. */
+export function catalogGroupLabel(provider: string) {
+  if (provider === "codex_cli") return "ChatGPT plan via Codex CLI";
+  if (provider === "claude_cli") return "Claude plan via Claude Code";
+  return providerLabel(provider);
+}
+
+/** Whether `ref` runs through a subscription bridge that is turned off. */
+export function needsBridge(ref: Pick<ModelRef, "provider">, cli: CliBridges | null | undefined) {
+  const name = cliBridgeName(ref.provider);
+  return name !== null && !(cli?.[name].enabled ?? false);
+}
+
+/**
+ * Validates a custom CLI path draft. Empty means auto-detect (null). Mirrors the Rust rule
+ * (absolute, at most 260 characters) for Windows paths: `C:\...` or `\\server\share\...`.
+ */
+export function validateCliPath(draft: string): { path: string | null; error: null } | { path: null; error: string } {
+  const text = draft.trim();
+  if (!text) return { path: null, error: null };
+  if ([...text].length > MAX_CLI_PATH) return { path: null, error: `Use a path of at most ${MAX_CLI_PATH} characters.` };
+  if (/[\u0000-\u001f"<>|*]/.test(text)) return { path: null, error: "Remove quotes and the characters < > | * from the path." };
+  const verbatim = text.startsWith("\\\\?\\");
+  const rest = verbatim ? text.slice(4) : text;
+  if (rest.includes("?")) return { path: null, error: "Remove the character ? from the path." };
+  const drive = /^[A-Za-z]:[\\/]/.test(rest);
+  const unc = !verbatim && /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(rest);
+  const verbatimUnc = verbatim && /^UNC\\[^\\]+\\[^\\]+/i.test(rest);
+  if (!drive && !unc && !verbatimUnc) {
+    return { path: null, error: "Enter a full path such as C:\\Tools\\codex.exe, or leave it empty to find the tool on PATH." };
+  }
+  return { path: text, error: null };
+}
+
+/** Bridge status from `get_text_cli_status`; loads once on mount, `refresh` reloads. Older responses never win. */
+export function useTextCliStatus() {
+  const [status, setStatus] = useState<TextCliStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const requestId = useRef(0);
+
+  const refresh = useCallback(async () => {
+    const id = ++requestId.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const value = await getTextCliStatus();
+      if (id === requestId.current) setStatus(value);
+    } catch (reason) {
+      if (id === requestId.current) setError(String(reason));
+    } finally {
+      if (id === requestId.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    return () => { requestId.current += 1; };
+  }, [refresh]);
+
+  return { status, error, loading, refresh };
+}
+
 export type FavoriteResult = { favorites: ModelRef[]; error: null } | { favorites: null; error: string };
 
 export function addFavorite(favorites: readonly ModelRef[], ref: ModelRef): FavoriteResult {
@@ -496,9 +588,13 @@ export function parseModelOptionValue(value: string): { provider: TextProviderKi
   return null;
 }
 
-/** Catalog models grouped by provider (display order), quick candidates first within each group. */
-export function groupCatalogModels(models: readonly TextModelInfo[]) {
-  return CATALOG_PROVIDERS.map((provider) => {
+/**
+ * Catalog models grouped by provider (display order), quick candidates first within each group.
+ * Subscription-bridge models (ChatGPT plan, Claude plan) follow, but only for bridges enabled in `cli`.
+ */
+export function groupCatalogModels(models: readonly TextModelInfo[], cli?: CliBridges | null) {
+  const providers: TextProviderKind[] = [...CATALOG_PROVIDERS, ...CLI_PROVIDERS.filter((provider) => !needsBridge({ provider }, cli))];
+  return providers.map((provider) => {
     const own = models.filter((model) => model.provider === provider);
     return { provider, models: [...own.filter((model) => model.quickCandidate), ...own.filter((model) => !model.quickCandidate)] };
   }).filter((group) => group.models.length > 0);
@@ -559,10 +655,15 @@ export function endpointsPatch(assist: TextAssistSettings, endpoints: CompatEndp
   return { openaiCompatible: endpoints, favoriteModels, ensembleProfiles, modelColors: pruneModelColors(next) };
 }
 
-/** Picker label: "GPT-6 Luna - $0.10 in / $0.50 out per 1M tokens", plus retirement and key hints. */
+/**
+ * Picker label: "GPT-6 Luna - $0.10 in / $0.50 out per 1M tokens", plus retirement and key hints.
+ * Bridge models show their billing instead: "GPT-6 Luna (ChatGPT plan) - $0 marginal".
+ */
 export function catalogOptionLabel(model: TextModelInfo, missingKey = false) {
   const retiring = model.shutdown ? ` (retires ${model.shutdown})` : "";
-  return `${model.label} - ${formatModelPrice(model)}${retiring}${missingKey ? " - needs key" : ""}`;
+  const plan = planBillingLabel(model.provider);
+  const price = plan ? (model.label.includes(plan) ? "$0 marginal" : `${plan}, $0 marginal`) : formatModelPrice(model);
+  return `${model.label} - ${price}${retiring}${missingKey ? " - needs key" : ""}`;
 }
 
 /** Readable name for a favorite: "GPT-6 Luna, None" or "llama3.2 on Ollama". */

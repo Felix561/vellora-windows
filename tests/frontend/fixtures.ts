@@ -1,10 +1,12 @@
 import type {
   AppHealthSnapshot,
   AppSettings,
+  CliStatus,
   DashboardStats,
   TextAssistOverview,
   TextAssistRun,
   TextAssistSettings,
+  TextCliStatus,
   TextModelInfo,
   TextProviderKeys,
   TranscriptHistoryItem,
@@ -100,6 +102,27 @@ export function textAssistOverview(overrides: Partial<TextAssistOverview> = {}):
       textModel({ provider: "gemini", id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", efforts: ["minimal", "low", "medium", "high"], defaultEffort: "minimal", inputUsdPerMillion: 0.25, outputUsdPerMillion: 1.5, color: "#7baaf7" }),
     ],
     lastKept: null,
+    ...overrides,
+  };
+}
+
+/** Subscription-bridge catalog entries (Rust `catalog.rs`, provider codex_cli / claude_cli, price 0). */
+export function cliModels(): TextModelInfo[] {
+  const plan = { inputUsdPerMillion: 0, outputUsdPerMillion: 0, quickCandidate: false, efforts: ["low", "medium", "high", "xhigh", "max"] as TextModelInfo["efforts"], defaultEffort: "medium" as const };
+  return [
+    textModel({ ...plan, provider: "codex_cli", id: "gpt-6-luna", label: "GPT-6 Luna (ChatGPT plan)", color: "#3cb98f" }),
+    textModel({ ...plan, provider: "claude_cli", id: "sonnet", label: "Claude Sonnet (Claude plan)", color: "#d97757" }),
+  ];
+}
+
+export function cliStatus(overrides: Partial<CliStatus> = {}): CliStatus {
+  return { installed: true, version: "0.169.0", signedIn: true, planLogin: true, path: "C:\\Tools\\codex.exe", ...overrides };
+}
+
+export function textCliStatus(overrides: Partial<TextCliStatus> = {}): TextCliStatus {
+  return {
+    codex: cliStatus(),
+    claude: cliStatus({ version: "2.5.0", path: "C:\\Users\\me\\.local\\bin\\claude.exe" }),
     ...overrides,
   };
 }

@@ -1362,3 +1362,15 @@ h3[tabindex="-1"]:focus { outline: none; }
   .ta-add-favorite { grid-template-columns: minmax(0, 1fr); }
   .ta-favorite-actions { flex: 1 1 100%; }
 }
+
+/* Subscription bridges (Models -> Text models). */
+.ta-bridge-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.ta-bridge-note { padding: 10px 12px; border-left: 3px solid var(--clay-dark); background: var(--paper-soft); line-height: 1.5; }
+.ta-bridge .toggle-row { margin-top: 10px; }
+.ta-bridge-path { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ta-bridge-path .field { flex: 1 1 260px; min-width: 0; margin: 0; }
+.ta-bridge-path input { font-family: ui-monospace, Consolas, monospace; }
+.ta-bridge-path input[aria-invalid="true"] { border-color: var(--danger); }
+.ta-spin { animation: spin 1s linear infinite; }
+[data-appearance="classic"] .ta-bridge-note { border: 2px groove #eee; border-left-width: 2px; background: #c0c0c0; }
+[data-appearance="classic"] .ta-bridge { border: 2px groove #eee; border-radius: 0; background: #c0c0c0; }

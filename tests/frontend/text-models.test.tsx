@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelsView } from "../../src/views/ModelsView";
 import * as api from "../../src/lib/api";
 import type { AppSettings, CompatEndpoint, ModelRef, TextAssistSettings } from "../../src/lib/types";
-import { settings, textAssistOverview, textAssistSettings, textProviderKeys } from "./fixtures";
+import { settings, textAssistOverview, textAssistSettings, textCliStatus, textProviderKeys } from "./fixtures";
 
 vi.mock("../../src/lib/api", () => ({
   getTextAssistOverview: vi.fn(),
@@ -13,6 +13,7 @@ vi.mock("../../src/lib/api", () => ({
   getTextProviderKeys: vi.fn(),
   saveTextProviderKey: vi.fn(),
   deleteTextProviderKey: vi.fn(),
+  getTextCliStatus: vi.fn(),
 }));
 
 const luna: ModelRef = { provider: "openai", model: "gpt-6-luna", effort: "none" };
@@ -24,6 +25,7 @@ beforeEach(() => {
   vi.mocked(api.getTextProviderKeys).mockResolvedValue(textProviderKeys({ gemini: true }));
   vi.mocked(api.saveTextProviderKey).mockResolvedValue();
   vi.mocked(api.deleteTextProviderKey).mockResolvedValue();
+  vi.mocked(api.getTextCliStatus).mockResolvedValue(textCliStatus());
 });
 
 /** Applies saved patches like App does, so the view re-renders with confirmed settings. */

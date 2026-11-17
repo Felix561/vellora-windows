@@ -86,6 +86,23 @@ export type CliBridge = {
   path: string | null;
 };
 
+export type CliBridges = { codex: CliBridge; claude: CliBridge };
+
+/** Rust `cli_common::CliStatus`: detected without making a model request. */
+export type CliStatus = {
+  installed: boolean;
+  version: string | null;
+  /** `null` when the CLI's own status command could not tell. */
+  signedIn: boolean | null;
+  /** `true` for the plan login (ChatGPT / claude.ai), `false` for an API-key login (billed to the API). */
+  planLogin: boolean | null;
+  /** The binary Vellora runs. */
+  path: string | null;
+};
+
+/** Rust `TextCliStatus`. */
+export type TextCliStatus = { codex: CliStatus; claude: CliStatus };
+
 export type CompatEndpoint = {
   id: string;
   name: string;
@@ -106,7 +123,7 @@ export type TextAssistSettings = {
   modelColors: Record<string, string>;
   saveHistory: boolean;
   limits: TextAssistLimits;
-  cli: { codex: CliBridge; claude: CliBridge };
+  cli: CliBridges;
   openaiCompatible: CompatEndpoint[];
   /** Newest first, at most five. */
   customInstructions: string[];

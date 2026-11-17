@@ -6,6 +6,7 @@ import {
   MAX_PROFILE_MEMBERS,
   MAX_PROFILE_NAME,
   addProfileMember,
+  catalogGroupLabel,
   catalogOptionLabel,
   effortForModel,
   effortLabel,
@@ -17,9 +18,11 @@ import {
   modelRef,
   modelRefLabel,
   moveFavorite,
+  needsBridge,
   needsKey,
   parseEnsembleLimit,
   parseModelOptionValue,
+  planBillingLabel,
   profileIdFromName,
   providerLabel,
   pruneModelColors,
@@ -29,6 +32,7 @@ import {
   type ProfileErrors,
 } from "../lib/textAssist";
 import type {
+  CliBridges,
   CompatEndpoint,
   Effort,
   EnsembleProfile,
@@ -52,16 +56,18 @@ type Props = {
 };
 
 /** Grouped catalog and endpoint options for a model `<select>` (value: `modelOptionValue`). */
-export function ModelOptions({ catalog, endpoints, keys }: {
+export function ModelOptions({ catalog, endpoints, keys, cli }: {
   catalog: readonly TextModelInfo[];
   endpoints: readonly CompatEndpoint[];
   keys: TextProviderKeys | null;
+  /** Subscription-bridge models are offered only for bridges enabled here. */
+  cli: CliBridges;
 }) {
-  const groups = useMemo(() => groupCatalogModels(catalog), [catalog]);
+  const groups = useMemo(() => groupCatalogModels(catalog, cli), [catalog, cli]);
   return (
     <>
       {groups.map((group) => (
-        <optgroup key={group.provider} label={providerLabel(group.provider)}>
+        <optgroup key={group.provider} label={catalogGroupLabel(group.provider)}>
           {group.models.map((model) => (
             <option key={model.id} value={modelOptionValue({ provider: model.provider, model: model.id })}>
               {catalogOptionLabel(model, needsKey(model, keys))}
@@ -168,7 +174,7 @@ export function EnsembleProfilesSection({ assist, catalog, loading, keys, busy, 
               )}
               {editing === profile.id && (
                 <ProfileForm initial={profile} existing={profiles} catalog={catalog} loading={loading} endpoints={endpoints}
-                  keys={keys} modelColors={assist.modelColors} busy={busy} onSubmit={submit} onCancel={closeForm} />
+                  keys={keys} cli={assist.cli} modelColors={assist.modelColors} busy={busy} onSubmit={submit} onCancel={closeForm} />
               )}
             </li>
           ))}
@@ -176,7 +182,7 @@ export function EnsembleProfilesSection({ assist, catalog, loading, keys, busy, 
       )}
       {editing === "new" ? (
         <ProfileForm initial={null} existing={profiles} catalog={catalog} loading={loading} endpoints={endpoints}
-          keys={keys} modelColors={assist.modelColors} busy={busy} onSubmit={submit} onCancel={closeForm} />
+          keys={keys} cli={assist.cli} modelColors={assist.modelColors} busy={busy} onSubmit={submit} onCancel={closeForm} />
       ) : (
         <div className="history-toolbar ta-row-actions">
           <button ref={addButton} type="button" className="icon-button" disabled={busy || full}
@@ -232,13 +238,14 @@ type FormProps = {
   loading: boolean;
   endpoints: readonly CompatEndpoint[];
   keys: TextProviderKeys | null;
+  cli: CliBridges;
   modelColors: Record<string, string>;
   busy: boolean;
   onSubmit: (profile: EnsembleProfile) => Promise<boolean>;
   onCancel: () => void;
 };
 
-function ProfileForm({ initial, existing, catalog, loading, endpoints, keys, modelColors, busy, onSubmit, onCancel }: FormProps) {
+function ProfileForm({ initial, existing, catalog, loading, endpoints, keys, cli, modelColors, busy, onSubmit, onCancel }: FormProps) {
   const ids = useId();
   const [name, setName] = useState(initial?.name ?? "");
   const [members, setMembers] = useState<ModelRef[]>(() => [...(initial?.members ?? [])]);
@@ -337,7 +344,9 @@ function ProfileForm({ initial, existing, catalog, loading, endpoints, keys, mod
                     {ref.provider === "openai_compatible"
                       ? `${endpoints.find((item) => item.id === ref.endpoint)?.name ?? ref.endpoint ?? "Unknown endpoint"} (OpenAI-compatible)`
                       : providerLabel(ref.provider)}
+                    {planBillingLabel(ref.provider) && " · $0 marginal"}
                     {needsKey(ref, keys) && <span className="warning-text ta-needs-key"> · needs key</span>}
+                    {needsBridge(ref, cli) && <span className="warning-text ta-needs-key"> · bridge off</span>}
                   </span>
                 </span>
                 {efforts.length > 0 ? (
@@ -377,7 +386,7 @@ function ProfileForm({ initial, existing, catalog, loading, endpoints, keys, mod
           <span>Model</span>
           <select id={`${ids}-model`} value={choice} disabled={busy || full} onChange={(event) => selectChoice(event.target.value)}>
             <option value="">{loading ? "Loading models..." : "Choose a model"}</option>
-            <ModelOptions catalog={catalog} endpoints={endpoints} keys={keys} />
+            <ModelOptions catalog={catalog} endpoints={endpoints} keys={keys} cli={cli} />
           </select>
         </label>
         <label className="field">
