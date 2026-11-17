@@ -10,6 +10,7 @@ import {
   friendlyWarnings,
   providerName,
   safeColor,
+  shortModelLabel,
   type PanelEnsembleProfile,
   type PanelModel,
   type PanelPhase,
@@ -246,9 +247,10 @@ export function EnsembleCards({ members, count, results, selected, showDiff, dif
         const result = results[index];
         const model = members[index];
         const phase: PanelPhase = result?.phase ?? "thinking";
-        const label = result?.label || model?.label || "Model";
-        const effort = (result ? result.effort : null) ?? model?.effort ?? null;
         const billing = billingLabel(result?.billing || model?.billing);
+        // The billing badge below already names the plan, so the narrow card title drops it.
+        const label = shortModelLabel(result?.label || model?.label || "Model", billing);
+        const effort = (result ? result.effort : null) ?? model?.effort ?? null;
         const cost = phase === "done" ? formatPanelCost(result?.costUsd ?? null) : null;
         const isSelected = index === selected;
         const warnings = result && (phase === "done" || phase === "streaming") ? friendlyWarnings(result.warnings) : [];

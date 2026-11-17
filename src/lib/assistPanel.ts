@@ -162,6 +162,12 @@ export function billingLabel(billing: string | null | undefined) {
   return billingLabels[billing] ?? billing;
 }
 
+/** Drops a trailing "(ChatGPT plan)"-style suffix that the billing badge next to it repeats. */
+export function shortModelLabel(label: string, billing: string) {
+  const suffix = billing ? ` (${billing})` : "";
+  return suffix && label.endsWith(suffix) && label.length > suffix.length ? label.slice(0, -suffix.length) : label;
+}
+
 const warningTexts: Record<string, string> = {
   guard_markup: "LaTeX/Markdown/code may have changed",
   guard_too_many_changes: "Large change",

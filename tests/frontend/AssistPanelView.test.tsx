@@ -14,6 +14,7 @@ import {
   normalizePanelResult,
   presetKeyRange,
   rememberInstruction,
+  shortModelLabel,
   targetAppName,
   formatUsd,
   normalizeEnsemblePreview,
@@ -639,6 +640,10 @@ describe("assistPanel helpers", () => {
     expect(billingLabel("chatgpt_plan")).toBe("ChatGPT plan");
     expect(billingLabel("local")).toBe("Local");
     expect(billingLabel("other")).toBe("other");
+    expect(shortModelLabel("GPT-6 Luna (ChatGPT plan)", "ChatGPT plan")).toBe("GPT-6 Luna");
+    expect(shortModelLabel("Claude Haiku (Claude plan)", "Claude plan")).toBe("Claude Haiku");
+    expect(shortModelLabel("GPT-5.6 Luna", "API")).toBe("GPT-5.6 Luna");
+    expect(shortModelLabel("Local model", "")).toBe("Local model");
     expect(formatPanelDuration(820)).toBe("820 ms");
     expect(formatPanelDuration(7900)).toBe("7.9 s");
     expect(formatPanelDuration(null)).toBeNull();
