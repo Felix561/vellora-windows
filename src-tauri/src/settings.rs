@@ -253,6 +253,10 @@ fn validate_text_assist(assist: &TextAssistSettings) -> anyhow::Result<()> {
             "Endpoint IDs must be unique"
         );
         anyhow::ensure!(
+            (1..=40).contains(&endpoint.name.trim().chars().count()),
+            "Endpoint names must be 1 to 40 characters"
+        );
+        anyhow::ensure!(
             is_allowed_base_url(&endpoint.base_url),
             "Endpoint URLs must use HTTPS, or HTTP only for 127.0.0.1, localhost or [::1]"
         );
@@ -321,6 +325,15 @@ fn is_allowed_base_url(value: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(value) else {
         return false;
     };
+    // Credentials, queries and fragments never belong in a base URL (keys live in the
+    // Credential Manager); the engine rejects them too.
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
     match url.scheme() {
         "https" => url.host_str().is_some_and(|host| !host.is_empty()),
         "http" => matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]")),
@@ -840,6 +853,7 @@ mod tests {
             with_assist(|a| {
                 a.openai_compatible.push(CompatEndpoint {
                     id: "e".to_string(),
+                    name: "Endpoint".to_string(),
                     base_url: url.to_string(),
                     ..CompatEndpoint::default()
                 })
@@ -861,6 +875,9 @@ mod tests {
             "http://127.0.0.2/v1",
             "ftp://example.com",
             "file:///C:/x",
+            "https://user:secret@example.com/v1",
+            "https://example.com/v1?key=secret",
+            "https://example.com/v1#frag",
         ] {
             assert!(validate_settings(&with_url(url)).is_err(), "{url} accepted");
         }
