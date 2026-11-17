@@ -4,6 +4,7 @@
 // Wired into the app in M2/M3; until then some items are unused.
 #![allow(dead_code)]
 
+pub mod geometry;
 pub mod guard;
 pub mod job;
 pub mod prompts;
