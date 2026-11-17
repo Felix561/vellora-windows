@@ -86,6 +86,20 @@ Keep the same destination field focused while dictating. Automatic paste checks 
 
 New users without a saved key see the guide automatically. You can skip it and reopen it through **Help & About > Open guided setup**. Help also offers version information and **Copy support information**: a limited summary without keys, audio, transcripts, device names, personal paths, or free-form errors. See [troubleshooting](docs/TROUBLESHOOTING.md) if recording or paste does not work.
 
+## Text Assist (feature branch, not released)
+
+Text Assist is being built on the local `feature/text-assist` branch and is not part of any release. Design and status: [TEXT_ASSIST_PLAN.md](docs/TEXT_ASSIST_PLAN.md).
+
+| Action | Control |
+| --- | --- |
+| Fix spelling, grammar and punctuation of the selected text in place | Select text in any app, tap **Shift + Win** |
+| Cancel a running polish | Tap **Shift + Win** again |
+| Rewrite with a preset (Polish, Clearer, Academic, Professional, Custom) | Hold **Shift + Win**, release, choose with **1-5**, **Enter** applies |
+| Compare several models side by side | In the Rewrite panel press **E** (ensemble cards, cost preview first) |
+| Undo a replacement | The editor's own **Ctrl + Z** |
+
+A small progress ring with a short label floats above all windows at the selection while the model works. Only the selected text is sent, to the provider you chose (OpenAI, Anthropic, Google Gemini, an OpenAI-compatible endpoint, or your own signed-in Codex or Claude Code CLI for personal use). Vellora never pastes into an uncertain destination: if the window, focus or selection changed, or the result looks wrong (changed LaTeX/Markdown/code, too many changes), the result is kept in **History > Text Assist** instead. Models and keys are under **Models > Text models**; options under **Settings > Text Assist**.
+
 ## Privacy and current limitations
 
 Settings and text history are stored under `%APPDATA%/Vellora`; the API key is stored in Windows Credential Manager. Vellora does not encrypt local history. Disabling history affects future entries and keeps the latest transcript recoverable in memory.
@@ -97,7 +111,7 @@ Temporary audio is removed after normal processing or failure. A forced shutdown
 - Clipboard restoration is best effort and preserves plain text only. Rich formatting can be lost; pure non-text clipboard content causes automatic paste to be skipped when preservation is requested. Slow paste consumers can race restoration.
 - Windows can reject paste into elevated applications. Input injection succeeding does not prove a destination accepted the text.
 - Cost charts estimate saved successful transcripts; they are not a billing ledger.
-- Current provider model IDs have scheduled retirement dates. See the [model lifecycle review](docs/MODEL_LIFECYCLE.md) for deadlines and the migration work still required; replacement models have not been integrated or validated.
+- Current provider model IDs have scheduled retirement dates. Dictation cleanup moved to `gpt-6-luna` on the feature branch (validated November 17, 2026); the transcription models still need their migration. See the [model lifecycle review](docs/MODEL_LIFECYCLE.md).
 - A running dictation uses options captured when recording stops. Wait until idle or quit before changing retention/delivery and deleting data for a definite boundary.
 - Microphone selection, history search/export/pagination, complete local-data removal, and public installer signing remain on the [roadmap](docs/ROADMAP.md).
 

@@ -57,7 +57,7 @@ Updated October 6, 2026 for the 0.2.21 public source beta. Windows remains the o
 Local feature design (approved November 17, 2026): [Text Assist](TEXT_ASSIST_PLAN.md)
 defines selected-text Quick Polish (tap Shift+Win), a Rewrite panel (hold), several
 text providers, personal-use subscription bridges and a model/effort ensemble, in
-milestones M0–M7. Its M0 resolves MODEL-03. Planned, not implemented or released.
+milestones M0–M7. Its M0 resolves MODEL-03. Implemented locally on `feature/text-assist` (M0-M7 code; live checks done for Quick Polish in Notepad, VS Code and TeXstudio); not released. Remaining: the manual native matrix (spec 9.2), a live Rewrite panel/ensemble check and the publication review of the subscription bridges.
 
 | ID | Task | Acceptance criteria |
 | --- | --- | --- |

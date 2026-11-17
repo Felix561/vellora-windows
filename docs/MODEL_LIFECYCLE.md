@@ -25,6 +25,16 @@ Six synthetic transcripts (English, German, mixed technical identifiers, an info
 
 Decision: keep **`gpt-6-luna` with effort `none`**. It matched `low` on every sample at about half the cost and has the lowest price of the candidates. One sample added quotation marks around a quoted word ("banana"), a harmless style change.
 
+## Text Assist models (feature branch, checked November 17, 2026)
+
+The Text Assist catalog lives in [catalog.rs](../src-tauri/src/text_providers/catalog.rs) with the
+check date per entry. No catalog model has a published shutdown date yet. Quick Polish defaults to
+`gpt-5.6-luna` (effort `none`); see the benchmark in [TEXT_ASSIST_PLAN.md](TEXT_ASSIST_PLAN.md)
+section 9.4. Anthropic (`claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`; header
+`anthropic-version: 2026-10-21`) and Gemini (`gemini-3.1-flash-lite`, `gemini-3.6-flash`,
+`gemini-3.8-flash`; Flash prices change on 2027-01-01) entries were verified against the provider
+documentation but not yet with a live request. Recheck the deprecation pages before each release.
+
 ## Scheduled shutdowns affecting Vellora
 
 | Current exact model ID in Vellora | Purpose | OpenAI shutdown date | OpenAI's documented replacement |

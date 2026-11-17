@@ -40,6 +40,24 @@ With copying disabled and automatic paste enabled, Vellora temporarily uses the 
 
 Vellora checks the top-level destination window before simulating Ctrl+V. It does not track caret movement, browser-tab changes, or focus changes within that same window. Successful input injection does not prove the app accepted or stored text. Content pasted into another app is outside Vellora's deletion controls.
 
+## Text Assist (feature branch, not released)
+
+**What leaves the PC.** When you tap or hold Shift+Win, only the selected text is sent, with fixed instructions, to the provider of the model you chose for that run: OpenAI (Responses API, `store: false`), Anthropic (Messages API), Google Gemini (AI Studio API; the free tier may use content to improve Google products, the paid tier does not) or an OpenAI-compatible endpoint you configured (local endpoints such as Ollama stay on the PC). Ensemble runs send the same text to every member of the profile; the panel lists the members and their providers before you start. Surrounding text and window contents are never sent. No tools are enabled for any model.
+
+**Subscription bridges (personal use).** For "ChatGPT plan" and "Claude plan" models, Vellora starts your own installed and signed-in Codex or Claude Code CLI in an empty temporary folder and passes the text on standard input. Vellora never reads, stores or forwards their login tokens; the CLI's own terms and data handling apply.
+
+**What stays on the PC.**
+
+| Data | Location | Retention |
+| --- | --- | --- |
+| Anthropic, Gemini and endpoint keys | Windows Credential Manager, service `Vellora`, usernames `anthropic`, `gemini`, `compat:<id>` | Until removed in **Models > Text models** |
+| Original text, result, provider, model, effort, outcome, sanitized reason, target app file name, durations, tokens and estimated cost | `text_assist_runs` table in `%APPDATA%/Vellora/vellora.db` | Saved by default; delete per entry or clear in **History > Text Assist**; turn off in **Settings > Text Assist** |
+| Latest result that was kept instead of pasted | Process memory | Until replaced or exit, also with history off |
+
+**Clipboard.** Selection capture copies with the editor's own Ctrl+C, then restores your previous clipboard (all standard formats, up to 64 MB) when nobody changed it meanwhile. Vellora's own clipboard writes are marked so Windows clipboard history and cloud clipboard skip them. The editor's own copy of your selection can still appear in Win+V history.
+
+**Screen geometry.** To place the progress ring, Vellora asks Windows UI Automation for the selection rectangle, caret position and whether the focused field is a password field. It does not read text through UI Automation. Password fields are refused.
+
 ## Deletion and legacy data
 
 History offers individual deletion and clear-all confirmation. These remove rows from the active database and clear matching/latest in-memory text. SQLite secure deletion is enabled. This does not guarantee forensic erasure from SSDs, snapshots, backups or other copies.

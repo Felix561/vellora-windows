@@ -70,6 +70,22 @@ This public repository distributes source only; there is no approved public inst
 
 If the interface cannot open because WebView2 is unavailable, check the [official Microsoft WebView2 runtime page](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) or ask your Windows administrator. An installation or uninstall issue should include the Windows version and whether this was a fresh install or an upgrade.
 
+## Text Assist (Shift + Win) shows a message or does nothing
+
+Text Assist is on the local feature branch only. The ring label tells what happened; the text is untouched unless the label is a number of fixes or "Applied".
+
+| Label | Meaning and fix |
+| --- | --- |
+| Select text first | Nothing was copied. Select text first. Elevated (administrator) apps and some fields block simulated copy. In VS Code, an empty selection copies the whole line; Vellora refuses that. |
+| Saved in Vellora | The window, focus or selection changed, or you typed or clicked while the model worked, so Vellora did not paste. Open **History > Text Assist** and copy the result. |
+| Review in Vellora | The result looked wrong (changed LaTeX/Markdown/code, too many changes, incomplete). It is in History for review. |
+| Release keys | Shift, Ctrl, Alt or Win were still held when Vellora needed to copy or paste. Release them and try again. |
+| Clipboard busy / Copy blocked | Another app held the clipboard, or Windows blocked simulated input. Try again; avoid elevated destination apps. |
+| Add API key / Key rejected / Rate limited / Offline / Timed out | Check **Models > Text models** and your provider account. |
+| One cursor only | VS Code had several cursors; use one selection. |
+
+If the wrong text lands in apps that read the clipboard late, raise **Settings > Text Assist > Paste restore delay** (default 400 ms). Shift+Win does not open the Start menu. Security software may watch apps that use keyboard hooks, simulated input and the clipboard; if it blocks Vellora, check its notification history.
+
 ## Send a useful bug report
 
 Use the public repository's [**Bug report** form](https://github.com/Felix561/vellora-windows/issues/new/choose). Include the app version, Windows version, appearance, selected model, exact steps, expected behavior, actual behavior, and whether it repeats. Use a dummy sentence to demonstrate recording or text behavior.

@@ -1,12 +1,28 @@
 # Text Assist: design spec and milestone roadmap
 
-Status: **design approved by the owner on November 17, 2026; not implemented.**
+Status: **design approved by the owner on November 17, 2026. Implemented locally on `feature/text-assist` the same day (M0-M7 code, see the implementation status below); not released.**
 This document replaces the earlier feature brief of the same date. It describes
 local development only. It is not approval to push, publish, release, install an
 update, or change the public/private repository arrangement.
 
 UI concept mockup (synthetic content, not final visuals; its selection outlines are superseded, see 2.4):
 [text-assist-ui-concept.html](text-assist-ui-concept.html). Open it in a browser.
+
+## Implementation status (November 17, 2026)
+
+| Milestone | Code | Verified |
+| --- | --- | --- |
+| M0 cleanup model | `gpt-6-luna`, effort `none`, settings migration, per-model pricing | Consented live comparison; automated tests |
+| M1 spike | Throwaway probe (not in the repo) | Findings table under section 10 |
+| M2/M3 Quick Polish | Chord machine, activity counter, input lock, clipboard snapshot, capture/verify/replace, guard, OpenAI streaming, halo window, history, settings, dashboard | Live end-to-end in Notepad, VS Code, TeXstudio (apply, undo, no change, cancel, activity -> kept, VS Code empty selection); consented benchmark (9.4) |
+| M4 Rewrite panel | Panel window, presets, another take, diff, model switch, focus hand-back + re-copy apply | Automated tests; live check pending |
+| M5 providers | Anthropic, Gemini, OpenAI-compatible engines, engine factory, per-provider keys, Text models UI | Loopback fixture tests; no live provider call yet |
+| M6 subscription bridges | Codex CLI (exec) and Claude Code (`claude -p`) in a Job Object, status probe, settings UI | Fake-CLI tests; status probe on this PC; no live model run yet (needs consent, uses plan limits) |
+| M7 ensemble | Profiles, cost preview and limit, parallel members, cards, apply a card | Automated tests; live check pending |
+
+Changes from the original design: no selection outline (ring + short label only, owner decision);
+Quick Polish default `gpt-5.6-luna` (benchmark); Codex bridge uses `codex exec` only (app-server is
+experimental).
 
 ## 1. Summary
 

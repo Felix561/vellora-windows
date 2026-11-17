@@ -4,6 +4,14 @@ Vellora is a Windows-only early beta. Entries describe private review versions; 
 
 ## Unreleased (local) - November 17, 2026
 
+### Added (feature branch `feature/text-assist`)
+
+- **Text Assist:** tap Shift+Win to proofread the selected text in place in any app; hold Shift+Win for a Rewrite panel with presets (Polish, Clearer, Academic, Professional, Custom), another take, word diff and model switching; press E in the panel for ensemble cards with a cost preview and per-run limit.
+- Providers: OpenAI, Anthropic, Google Gemini and OpenAI-compatible endpoints with keys in Credential Manager, plus personal-use bridges to the signed-in Codex and Claude Code CLIs.
+- Safety: clipboard round trip with full-format restore and history/cloud exclusion, target/focus/activity verification before pasting, re-copy check after the panel, output guard for LaTeX/Markdown/code and size, results kept in History instead of uncertain pastes.
+- A progress ring with a short label floats above all windows at the selection (no outline, owner decision after the first live test).
+- History, Dashboard and Settings sections for Text Assist; "Text models" tab for keys, endpoints, favorites, colors and ensemble profiles.
+
 ### Changed
 
 - Dictation cleanup now defaults to `gpt-6-luna`, OpenAI's documented replacement for `gpt-5-nano` (shutdown December 11, 2026). Cleanup requests to Luna models ask for reasoning effort `none`.
