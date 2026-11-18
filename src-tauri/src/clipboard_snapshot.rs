@@ -15,8 +15,11 @@ use std::{
 use anyhow::Context;
 use windows::core::w;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+use windows::Win32::Graphics::Gdi::{
+    DeleteEnhMetaFile, GetEnhMetaFileBits, SetEnhMetaFileBits, HENHMETAFILE,
+};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
     GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{
@@ -26,6 +29,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
     VK_SHIFT, VK_V,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 use crate::input_activity::key_input;
 
@@ -33,9 +37,11 @@ const CF_TEXT: u32 = 1;
 const CF_BITMAP: u32 = 2;
 const CF_METAFILEPICT: u32 = 3;
 const CF_OEMTEXT: u32 = 7;
+const CF_DIB: u32 = 8;
 const CF_PALETTE: u32 = 9;
 const CF_UNICODETEXT: u32 = 13;
 const CF_ENHMETAFILE: u32 = 14;
+const CF_DIBV5: u32 = 17;
 const CF_OWNERDISPLAY: u32 = 0x80;
 const CF_DSPBITMAP: u32 = 0x82;
 const CF_DSPMETAFILEPICT: u32 = 0x83;
@@ -48,12 +54,15 @@ pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Whether a clipboard format is copied into a snapshot. GDI-handle and owner-display formats
 /// are skipped (Windows re-synthesizes them from their HGLOBAL equivalents), as are the
-/// private/GDI-object ranges and ANSI/OEM text when Unicode text is present (synthesized).
+/// private/GDI-object ranges, ANSI/OEM text when Unicode text is present and CF_DIB when
+/// CF_DIBV5 is present (both synthesized, so a large image is not stored twice). Enhanced
+/// metafiles are copied through their bits: nothing else re-creates them.
 pub fn keep_format(format: u32, present: &[u32]) -> bool {
     match format {
-        CF_BITMAP | CF_METAFILEPICT | CF_PALETTE | CF_ENHMETAFILE | CF_OWNERDISPLAY
-        | CF_DSPBITMAP | CF_DSPMETAFILEPICT | CF_DSPENHMETAFILE => false,
+        CF_BITMAP | CF_METAFILEPICT | CF_PALETTE | CF_OWNERDISPLAY | CF_DSPBITMAP
+        | CF_DSPMETAFILEPICT | CF_DSPENHMETAFILE => false,
         CF_TEXT | CF_OEMTEXT => !present.contains(&CF_UNICODETEXT),
+        CF_DIB => !present.contains(&CF_DIBV5),
         0x0200..=0x03FF => false,
         _ => true,
     }
@@ -62,6 +71,15 @@ pub fn keep_format(format: u32, present: &[u32]) -> bool {
 /// Current clipboard sequence number.
 pub fn sequence() -> u32 {
     unsafe { GetClipboardSequenceNumber() }
+}
+
+/// Process that owns the current clipboard contents (the last app that emptied it with a
+/// window), or `None` when there is no owner window.
+pub fn owner_pid() -> Option<u32> {
+    let owner = unsafe { GetClipboardOwner() }.ok()?;
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(owner, Some(&mut pid)) };
+    (pid != 0).then_some(pid)
 }
 
 struct OpenClipboardGuard;
@@ -113,9 +131,13 @@ impl ClipboardSnapshot {
             let Ok(handle) = (unsafe { GetClipboardData(format) }) else {
                 continue;
             };
-            let Some(bytes) =
-                (unsafe { read_hglobal(HGLOBAL(handle.0), MAX_SNAPSHOT_BYTES - total) })
-            else {
+            let limit = MAX_SNAPSHOT_BYTES - total;
+            let bytes = if format == CF_ENHMETAFILE {
+                unsafe { read_enhmetafile(HENHMETAFILE(handle.0), limit) }
+            } else {
+                unsafe { read_hglobal(HGLOBAL(handle.0), limit) }
+            };
+            let Some(bytes) = bytes else {
                 snapshot.partial = true;
                 continue;
             };
@@ -134,19 +156,33 @@ impl ClipboardSnapshot {
     }
 
     /// Replaces the clipboard with the snapshot. Non-empty restores carry the history/cloud
-    /// exclusion formats so the restore does not appear as a new Win+V entry.
+    /// exclusion formats so the restore does not appear as a new Win+V entry. A format that
+    /// cannot be written does not stop the others; the first error is returned at the end.
     pub fn restore(&self) -> anyhow::Result<u32> {
+        let mut first_error = None;
         {
             let _open = open_clipboard()?;
             unsafe { EmptyClipboard() }.context("Could not clear the clipboard")?;
             for (format, bytes) in &self.formats {
-                put_bytes(*format, bytes)?;
+                let written = if *format == CF_ENHMETAFILE {
+                    put_enhmetafile(bytes)
+                } else {
+                    put_bytes(*format, bytes)
+                };
+                if let Err(err) = written {
+                    first_error.get_or_insert(err);
+                }
             }
             if !self.formats.is_empty() {
-                put_exclusion_formats()?;
+                if let Err(err) = put_exclusion_formats() {
+                    first_error.get_or_insert(err);
+                }
             }
         }
-        Ok(sequence())
+        match first_error {
+            Some(err) => Err(err),
+            None => Ok(sequence()),
+        }
     }
 }
 
@@ -164,6 +200,31 @@ unsafe fn read_hglobal(handle: HGLOBAL, limit: usize) -> Option<Vec<u8>> {
     // GlobalUnlock reports an "error" when the lock count reaches zero; that is expected.
     let _ = GlobalUnlock(handle);
     Some(bytes)
+}
+
+/// Copies an enhanced metafile's bits. `None` when the handle is invalid or exceeds `limit`.
+unsafe fn read_enhmetafile(handle: HENHMETAFILE, limit: usize) -> Option<Vec<u8>> {
+    let size = GetEnhMetaFileBits(handle, None) as usize;
+    if size == 0 || size > limit {
+        return None;
+    }
+    let mut bytes = vec![0u8; size];
+    (GetEnhMetaFileBits(handle, Some(&mut bytes)) as usize == size).then_some(bytes)
+}
+
+/// Must be called while the clipboard is open. The metafile handle passes to the system.
+fn put_enhmetafile(bytes: &[u8]) -> anyhow::Result<()> {
+    unsafe {
+        let metafile = SetEnhMetaFileBits(bytes);
+        if metafile.is_invalid() {
+            anyhow::bail!("Could not rebuild the clipboard picture");
+        }
+        if SetClipboardData(CF_ENHMETAFILE, HANDLE(metafile.0)).is_err() {
+            let _ = DeleteEnhMetaFile(metafile);
+            anyhow::bail!("Could not write clipboard data");
+        }
+    }
+    Ok(())
 }
 
 /// Must be called while the clipboard is open. Ownership of the memory passes to the system.
@@ -530,6 +591,14 @@ mod tests {
     fn format_filter_skips_gdi_owner_display_private_and_synthesized_text() {
         let with_unicode = [CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT, CF_BITMAP, 8, 17];
         assert!(keep_format(CF_UNICODETEXT, &with_unicode));
+        // CF_DIB is synthesized from CF_DIBV5 (and back), so only one is stored.
+        assert!(!keep_format(CF_DIB, &with_unicode));
+        assert!(keep_format(CF_DIB, &[CF_DIB, CF_BITMAP]));
+        // Enhanced metafiles are copied through their bits (CF_METAFILEPICT is synthesized).
+        assert!(keep_format(
+            CF_ENHMETAFILE,
+            &[CF_ENHMETAFILE, CF_METAFILEPICT]
+        ));
         assert!(!keep_format(CF_TEXT, &with_unicode));
         assert!(!keep_format(CF_OEMTEXT, &with_unicode));
         assert!(keep_format(CF_TEXT, &[CF_TEXT]));
@@ -537,7 +606,6 @@ mod tests {
             CF_BITMAP,
             CF_METAFILEPICT,
             CF_PALETTE,
-            CF_ENHMETAFILE,
             CF_OWNERDISPLAY,
             CF_DSPBITMAP,
             0x0200,
@@ -545,8 +613,8 @@ mod tests {
         ] {
             assert!(!keep_format(skipped, &with_unicode), "{skipped:#x}");
         }
-        // DIB, DIBV5, HDROP, locale and registered formats (HTML Format, PNG) are kept.
-        for kept in [8, 17, 15, 16, 0xC0FF, 0xC123] {
+        // DIBV5, HDROP, locale and registered formats (HTML Format, PNG) are kept.
+        for kept in [17, 15, 16, 0xC0FF, 0xC123] {
             assert!(keep_format(kept, &with_unicode), "{kept:#x}");
         }
     }

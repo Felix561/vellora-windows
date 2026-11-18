@@ -3,13 +3,14 @@
 use std::time::Duration;
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    GetForegroundWindow, GetWindowThreadProcessId, SendMessageTimeoutW, SetForegroundWindow,
+    SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL,
 };
 
 use super::{
@@ -30,6 +31,11 @@ const MIN_RESTORE_DELAY: Duration = Duration::from_millis(50);
 const QUIET_PERIOD: Duration = Duration::from_millis(300);
 /// Give up waiting for idle input after this long; the result is kept instead.
 const QUIET_TIMEOUT: Duration = Duration::from_millis(2_500);
+/// How long a copy that arrives after the wait is still noticed and undone.
+const LATE_COPY_WATCH: Duration = Duration::from_millis(1_500);
+/// Office apps may process a paste well after the key arrives (a sign-in prompt, autosave, a
+/// large document), so the user's clipboard is restored later there.
+const OFFICE_RESTORE_DELAY: Duration = Duration::from_millis(1_200);
 
 /// Everything recorded when the chord fired (spec 4.1).
 #[derive(Debug, Clone, PartialEq)]
@@ -246,22 +252,19 @@ impl JobPlatform for WindowsPlatform {
         if foreground().0 != target.hwnd {
             return Err(Failure::new("target_changed", "Window changed"));
         }
-        let saved = clip::ClipboardSnapshot::capture()
-            .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
+        let saved = save_clipboard()?;
         let before = clip::sequence();
         clip::send_copy().map_err(|_| Failure::new("input_blocked", "Copy blocked"))?;
         let Some(settled) = clip::wait_for_copy(before, CopyWait::default()) else {
-            // Nothing was copied, so the clipboard is untouched.
+            // Nothing was copied yet; a slow app may still copy and is undone then.
+            watch_for_late_copy(saved, before, target.pid);
             if target_is_elevated(target.pid) {
                 return Err(Failure::new("elevated_app", "App runs as admin"));
             }
             return Err(Failure::new("no_selection", "Select text first"));
         };
         let copied = clip::read_copied_selection();
-        // Restore only if nobody changed the clipboard after the injected copy.
-        if clip::sequence() == settled {
-            let _ = saved.restore();
-        }
+        restore_after_copy(&saved, settled, target.pid);
         let copied = copied.map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
         check_copied(copied.text, copied.vscode, max_chars)
     }
@@ -287,19 +290,7 @@ impl JobPlatform for WindowsPlatform {
             }
             Err(failure) => return Err(failure),
         }
-        let saved = clip::ClipboardSnapshot::capture()
-            .map_err(|_| Failure::new("clipboard_busy", "The clipboard is busy"))?;
-        let written = clip::write_text_excluded(text)
-            .map_err(|_| Failure::new("clipboard_busy", "The clipboard is busy"))?;
-        if clip::send_paste().is_err() {
-            let _ = saved.restore();
-            return Err(Failure::new("paste_failed", "Windows blocked the paste"));
-        }
-        std::thread::sleep(restore_delay.max(MIN_RESTORE_DELAY));
-        if clip::sequence() == written {
-            let _ = saved.restore();
-        }
-        Ok(())
+        paste_and_restore(target, text, restore_delay)
     }
 
     fn target_app(&self, target: &TargetSnapshot) -> Option<String> {
@@ -425,25 +416,143 @@ fn confirm_selection_after_input(target: &TargetSnapshot, original: &str) -> Res
         ..target.clone()
     };
     verify_unchanged(&settled_target, foreground().0, quiet, &focus)?;
-    let saved = clip::ClipboardSnapshot::capture()
-        .map_err(|_| Failure::new("clipboard_busy", "The clipboard is busy"))?;
+    let saved = save_clipboard()?;
     let before = clip::sequence();
     clip::send_copy().map_err(|_| Failure::new("input_blocked", "Copy blocked"))?;
     let Some(settled) = clip::wait_for_copy(before, CopyWait::default()) else {
-        // Nothing was copied: the selection is gone. The clipboard is untouched.
+        // Nothing was copied: the selection is gone.
+        watch_for_late_copy(saved, before, target.pid);
         return Err(Failure::new("selection_lost", "Selection lost"));
     };
     let verdict = match clip::read_copied_selection() {
         Ok(copied) => recopy_verdict(&copied, original),
         Err(_) => Err(Failure::new("clipboard_busy", "The clipboard is busy")),
     };
-    if clip::sequence() == settled {
-        let _ = saved.restore();
-    }
+    restore_after_copy(&saved, settled, target.pid);
     verdict?;
     // Input during the re-copy itself could have changed the selection again.
     if input_activity::current() != quiet {
         return Err(refused());
+    }
+    Ok(())
+}
+
+/// Saves the user's clipboard before Vellora's own copy or paste. A clipboard that cannot be
+/// saved completely (a format over the size cap) is refused rather than partly lost.
+fn save_clipboard() -> Result<clip::ClipboardSnapshot, Failure> {
+    let saved = clip::ClipboardSnapshot::capture()
+        .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
+    if saved.partial {
+        return Err(Failure::new("clipboard_unsupported", "Clipboard too large"));
+    }
+    Ok(saved)
+}
+
+/// Whether the clipboard after Vellora's injected copy still holds that copy: unchanged since
+/// it settled, or changed later by the target itself (OLE delayed rendering adds formats after
+/// the settle wait). A change by any other app is the user's and is kept.
+pub(crate) fn copy_still_ours(
+    sequence_now: u32,
+    settled: u32,
+    owner_pid: Option<u32>,
+    target_pid: u32,
+) -> bool {
+    sequence_now == settled || owner_pid == Some(target_pid)
+}
+
+/// Restores the user's clipboard after the injected copy unless another app changed it since.
+fn restore_after_copy(saved: &clip::ClipboardSnapshot, settled: u32, target_pid: u32) {
+    if copy_still_ours(clip::sequence(), settled, clip::owner_pid(), target_pid) {
+        let _ = saved.restore();
+    }
+}
+
+/// The injected copy produced nothing within the wait. A slow app may still copy afterwards and
+/// would overwrite the user's clipboard, so watch briefly and undo a late copy by the target.
+fn watch_for_late_copy(saved: clip::ClipboardSnapshot, before: u32, target_pid: u32) {
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + LATE_COPY_WATCH;
+        while std::time::Instant::now() < deadline {
+            if clip::sequence() != before {
+                // Let the target finish writing its formats before checking who wrote them.
+                std::thread::sleep(Duration::from_millis(150));
+                if clip::owner_pid() == Some(target_pid) {
+                    let _ = saved.restore();
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    });
+}
+
+/// Minimum time between the paste and restoring the user's clipboard for an app.
+pub(crate) fn min_restore_delay(exe_name: Option<&str>) -> Duration {
+    const OFFICE: &[&str] = &[
+        "winword.exe",
+        "outlook.exe",
+        "powerpnt.exe",
+        "excel.exe",
+        "onenote.exe",
+    ];
+    if exe_name.is_some_and(|exe| OFFICE.iter().any(|office| exe.eq_ignore_ascii_case(office))) {
+        OFFICE_RESTORE_DELAY
+    } else {
+        MIN_RESTORE_DELAY
+    }
+}
+
+/// Waits (bounded) until the target's input thread has handled its pending messages, so the
+/// injected Ctrl+V is processed before the clipboard is restored. Two WM_NULL round trips:
+/// the first may be handled before the queued key, the second only after the message that
+/// followed it. A hung target ends the wait.
+fn wait_for_input_processed(target: &TargetSnapshot) {
+    let window = if target.focus.focus_hwnd != 0 {
+        target.focus.focus_hwnd
+    } else {
+        target.hwnd
+    };
+    for _ in 0..2 {
+        let answered = unsafe {
+            SendMessageTimeoutW(
+                hwnd(window),
+                WM_NULL,
+                WPARAM(0),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                1_000,
+                None,
+            )
+        };
+        if answered.0 == 0 {
+            break;
+        }
+    }
+}
+
+/// Pastes `text` over the selection and restores the user's clipboard once the target has
+/// processed the paste. A busy app (Word showing a dialog, a large document) may handle the
+/// Ctrl+V long after it was sent; restoring first would paste the user's old clipboard.
+fn paste_and_restore(
+    target: &TargetSnapshot,
+    text: &str,
+    restore_delay: Duration,
+) -> Result<(), Failure> {
+    let saved = save_clipboard()?;
+    let written = clip::write_text_excluded(text)
+        .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
+    if clip::send_paste().is_err() {
+        let _ = saved.restore();
+        return Err(Failure::new("paste_failed", "Windows blocked the paste"));
+    }
+    let started = std::time::Instant::now();
+    wait_for_input_processed(target);
+    let delay = restore_delay.max(min_restore_delay(target.exe_name.as_deref()));
+    if let Some(rest) = delay.checked_sub(started.elapsed()) {
+        std::thread::sleep(rest);
+    }
+    if clip::sequence() == written {
+        let _ = saved.restore();
     }
     Ok(())
 }
@@ -477,11 +586,11 @@ impl WindowsPlatform {
             return Err(Failure::new("modifiers_held", "Release keys"));
         }
         let _input = input_lock::blocking_lock();
-        let saved = clip::ClipboardSnapshot::capture()
-            .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
+        let saved = save_clipboard()?;
         let before = clip::sequence();
         clip::send_copy().map_err(|_| Failure::new("input_blocked", "Copy blocked"))?;
         let Some(settled) = clip::wait_for_copy(before, CopyWait::default()) else {
+            watch_for_late_copy(saved, before, target.pid);
             return Err(Failure::new("selection_lost", "Selection lost"));
         };
         let copied = clip::read_copied_selection();
@@ -489,23 +598,10 @@ impl WindowsPlatform {
             Ok(copied) => recopy_verdict(copied, original),
             Err(_) => Err(Failure::new("clipboard_busy", "Clipboard busy")),
         };
-        if let Err(failure) = verdict {
-            if clip::sequence() == settled {
-                let _ = saved.restore();
-            }
-            return Err(failure);
-        }
-        let written = clip::write_text_excluded(text)
-            .map_err(|_| Failure::new("clipboard_busy", "Clipboard busy"))?;
-        if clip::send_paste().is_err() {
-            let _ = saved.restore();
-            return Err(Failure::new("paste_failed", "Paste blocked"));
-        }
-        std::thread::sleep(restore_delay.max(MIN_RESTORE_DELAY));
-        if clip::sequence() == written {
-            let _ = saved.restore();
-        }
-        Ok(())
+        // The paste below saves the clipboard again, so restore the user's contents first.
+        restore_after_copy(&saved, settled, target.pid);
+        verdict?;
+        paste_and_restore(target, text, restore_delay)
     }
 }
 
@@ -607,6 +703,25 @@ mod tests {
             recopy_matches(None, "a").unwrap_err().code,
             "selection_lost"
         );
+    }
+
+    #[test]
+    fn a_later_change_by_the_target_still_counts_as_its_copy() {
+        // Unchanged since the copy settled.
+        assert!(copy_still_ours(7, 7, Some(1), 42));
+        // The target kept adding formats (delayed rendering).
+        assert!(copy_still_ours(9, 7, Some(42), 42));
+        // Another app (the user copying something else) changed it: keep it.
+        assert!(!copy_still_ours(9, 7, Some(1), 42));
+        assert!(!copy_still_ours(9, 7, None, 42));
+    }
+
+    #[test]
+    fn office_apps_get_a_longer_restore_delay() {
+        assert_eq!(min_restore_delay(Some("WINWORD.EXE")), OFFICE_RESTORE_DELAY);
+        assert_eq!(min_restore_delay(Some("outlook.exe")), OFFICE_RESTORE_DELAY);
+        assert_eq!(min_restore_delay(Some("Notepad.exe")), MIN_RESTORE_DELAY);
+        assert_eq!(min_restore_delay(None), MIN_RESTORE_DELAY);
     }
 
     #[test]
