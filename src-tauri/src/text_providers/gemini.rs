@@ -163,7 +163,7 @@ pub(crate) fn request_body(
     request: &TextRequest,
     effort: Option<Effort>,
 ) -> Result<Value, TextError> {
-    let mut generation = json!({ "maxOutputTokens": request.max_output_tokens });
+    let mut generation = json!({ "maxOutputTokens": request.output_cap(effort) });
     if let Some(effort) = effort {
         let level = match effort {
             Effort::Minimal | Effort::Low | Effort::Medium | Effort::High => effort.as_str(),
@@ -431,7 +431,7 @@ mod tests {
         );
         assert_eq!(
             body["generationConfig"],
-            json!({ "maxOutputTokens": 256, "thinkingConfig": { "thinkingLevel": "minimal" } })
+            json!({ "maxOutputTokens": 256 + 1_024, "thinkingConfig": { "thinkingLevel": "minimal" } })
         );
         for absent in ["tools", "toolConfig", "safetySettings"] {
             assert!(body.get(absent).is_none(), "{absent}");
@@ -563,7 +563,7 @@ mod tests {
             sent["generationConfig"]["thinkingConfig"]["thinkingLevel"],
             "minimal"
         );
-        assert_eq!(sent["generationConfig"]["maxOutputTokens"], 256);
+        assert_eq!(sent["generationConfig"]["maxOutputTokens"], 256 + 1_024);
         assert!(sent.get("tools").is_none());
     }
 

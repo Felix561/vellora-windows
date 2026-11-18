@@ -146,7 +146,7 @@ pub(crate) fn request_body(request: &TextRequest, effort: Option<Effort>) -> Val
         "input": request.input,
         "store": false,
         "stream": true,
-        "max_output_tokens": request.max_output_tokens,
+        "max_output_tokens": request.output_cap(effort),
     });
     if let Some(effort) = effort {
         body["reasoning"] = json!({ "effort": effort.as_str() });

@@ -155,7 +155,7 @@ pub(crate) fn request_body(
 ) -> Result<Value, TextError> {
     let mut body = json!({
         "model": request.model.model,
-        "max_tokens": request.max_output_tokens,
+        "max_tokens": request.output_cap(effort),
         "stream": true,
         "system": request.instructions,
         "messages": [{ "role": "user", "content": request.input }],
@@ -429,7 +429,8 @@ mod tests {
         );
         assert!(!body["system"].as_str().unwrap().contains(INPUT));
         assert_eq!(body["stream"], true);
-        assert_eq!(body["max_tokens"], 256);
+        // The answer budget plus the reasoning allowance for effort low.
+        assert_eq!(body["max_tokens"], 256 + 4_096);
         assert_eq!(body["output_config"], json!({ "effort": "low" }));
         assert!(body.get("thinking").is_none());
         for absent in ["tools", "tool_choice", "temperature", "top_p", "top_k"] {

@@ -169,6 +169,29 @@ pub struct TextRequest {
     pub timeout: Duration,
 }
 
+impl TextRequest {
+    /// Output cap sent to the provider: the answer budget plus room for reasoning tokens.
+    /// OpenAI, Anthropic and Gemini count reasoning/thinking tokens against the same limit, so
+    /// a cap sized for the answer alone truncates or empties results at higher efforts.
+    /// `effort` is the resolved effort; `None` means the provider default, which may reason.
+    pub fn output_cap(&self, effort: Option<Effort>) -> u32 {
+        let reasoning: u32 = match effort {
+            Some(Effort::None) => 0,
+            Some(Effort::Minimal) => 1_024,
+            Some(Effort::Low) => 4_096,
+            None | Some(Effort::Medium) => 8_192,
+            Some(Effort::High) => 16_384,
+            Some(Effort::Xhigh) | Some(Effort::Max) => 32_000,
+        };
+        self.max_output_tokens
+            .saturating_add(reasoning)
+            .min(MAX_OUTPUT_CAP)
+    }
+}
+
+/// Upper bound for [`TextRequest::output_cap`]; within every catalog model's output limit.
+pub const MAX_OUTPUT_CAP: u32 = 64_000;
+
 /// Token usage reported by the provider.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -324,6 +347,27 @@ pub trait TextEngine: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_cap_adds_room_for_reasoning() {
+        let request = |max| TextRequest {
+            model: ModelRef::new(ProviderKind::Openai, "m", None),
+            instructions: String::new(),
+            input: String::new(),
+            max_output_tokens: max,
+            timeout: std::time::Duration::from_secs(1),
+        };
+        // Thinking off: the answer budget only.
+        assert_eq!(request(290).output_cap(Some(Effort::None)), 290);
+        assert_eq!(request(290).output_cap(Some(Effort::Low)), 290 + 4_096);
+        // No effort means the provider default, which may reason.
+        assert_eq!(request(290).output_cap(None), 290 + 8_192);
+        assert_eq!(request(290).output_cap(Some(Effort::High)), 290 + 16_384);
+        assert_eq!(
+            request(32_000).output_cap(Some(Effort::Max)),
+            MAX_OUTPUT_CAP
+        );
+    }
 
     #[test]
     fn model_ref_serializes_as_camel_case_and_omits_empty_fields() {
