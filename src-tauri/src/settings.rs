@@ -77,6 +77,19 @@ fn load_settings_from(path: &Path) -> anyhow::Result<(AppSettings, Option<String
         Err(_) => {
             let backup =
                 path.with_file_name(format!("settings-invalid-{}.json", uuid::Uuid::new_v4()));
+            // Text Assist is the newest and largest block. When only it is unreadable, keep
+            // every other setting and reset just Text Assist (the original is preserved).
+            if contents.len() as u64 <= MAX_SETTINGS_BYTES {
+                if let Some(mut settings) = without_text_assist(&contents) {
+                    fs::copy(path, &backup).context("Could not preserve invalid settings file")?;
+                    migrate_settings(&mut settings);
+                    let _ = save_settings_to(path, &settings);
+                    return Ok((
+                        settings,
+                        Some("Vellora could not read your saved Text Assist settings. They were reset to the defaults; all other settings were kept. The original file was preserved as settings-invalid-*.json in the app data folder.".to_string()),
+                    ));
+                }
+            }
             // Preserve the original before returning defaults. Never silently
             // overwrite settings that this version cannot understand.
             fs::rename(path, backup).context("Could not preserve invalid settings file")?;
@@ -86,6 +99,28 @@ fn load_settings_from(path: &Path) -> anyhow::Result<(AppSettings, Option<String
             ))
         }
     }
+}
+
+/// The settings without their `textAssist` block (defaults instead), when everything else
+/// parses and validates. `None` when the rest is unreadable too or there was no such block.
+fn without_text_assist(contents: &[u8]) -> Option<AppSettings> {
+    let mut value: serde_json::Value = serde_json::from_slice(contents).ok()?;
+    value.as_object_mut()?.remove("textAssist")?;
+    let settings: AppSettings = serde_json::from_value(value).ok()?;
+    validate_settings(&settings).ok()?;
+    Some(settings)
+}
+
+/// Saved settings must stay loadable: the loader refuses files over [`MAX_SETTINGS_BYTES`].
+fn ensure_loadable_size(contents: &str) -> anyhow::Result<()> {
+    if contents.len() as u64 > MAX_SETTINGS_BYTES {
+        anyhow::bail!(
+            "Settings are too large to save ({} KB, limit {} KB). Shorten or remove some presets, custom instructions or endpoints.",
+            contents.len().div_ceil(1024),
+            MAX_SETTINGS_BYTES / 1024
+        );
+    }
+    Ok(())
 }
 
 pub fn save_settings(settings: &AppSettings) -> anyhow::Result<()> {
@@ -358,6 +393,7 @@ fn save_settings_to(path: &Path, settings: &AppSettings) -> anyhow::Result<()> {
     validate_settings(settings)?;
     let contents =
         serde_json::to_string_pretty(settings).context("Could not serialize settings")?;
+    ensure_loadable_size(&contents)?;
     let parent = path
         .parent()
         .context("Settings path has no parent directory")?;
@@ -976,6 +1012,48 @@ mod tests {
         let (loaded, warning) = load_settings_from(&path).unwrap();
         assert!(warning.is_none());
         assert_eq!(loaded.language, "de");
+    }
+
+    #[test]
+    fn settings_too_large_to_load_are_not_saved() {
+        assert!(ensure_loadable_size(&"x".repeat(MAX_SETTINGS_BYTES as usize)).is_ok());
+        let err = ensure_loadable_size(&"x".repeat(MAX_SETTINGS_BYTES as usize + 1)).unwrap_err();
+        assert!(err.to_string().contains("too large"));
+    }
+
+    #[test]
+    fn invalid_text_assist_resets_only_text_assist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = AppSettings {
+            language: "de".to_string(),
+            ..AppSettings::default()
+        };
+        let mut value = serde_json::to_value(&settings).unwrap();
+        value["textAssist"]["holdThresholdMs"] = serde_json::json!("not a number");
+        let contents = serde_json::to_vec_pretty(&value).unwrap();
+        fs::write(&path, &contents).unwrap();
+
+        let (loaded, warning) = load_settings_from(&path).unwrap();
+        assert!(warning.unwrap().contains("Text Assist settings"));
+        assert_eq!(loaded.language, "de");
+        assert_eq!(loaded.text_assist, TextAssistSettings::default());
+        // The original is preserved next to the repaired file.
+        let backups: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("settings-invalid-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), contents);
+        let (reloaded, warning) = load_settings_from(&path).unwrap();
+        assert!(warning.is_none());
+        assert_eq!(reloaded.language, "de");
     }
 
     #[test]
