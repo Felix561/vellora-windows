@@ -394,6 +394,179 @@ pub struct ModelCostStat {
     pub audio_seconds: u64,
 }
 
+// Usage overview (Dashboard): dictation and Text Assist side by side. Built by
+// `usage_stats.rs`. Never carries selected, original or result text.
+
+/// Assumptions behind the "time saved" estimates, shown in the UI as a hint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAssumptions {
+    /// Dictated words per minute of typing saved (same basis as `DashboardStats`).
+    pub dictation_words_per_minute: u32,
+    /// Seconds saved per corrected word in an applied Text Assist run.
+    pub seconds_per_corrected_word: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationUsage {
+    pub transcripts: usize,
+    pub words: usize,
+    pub minutes_saved: f64,
+    pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextAssistUsage {
+    /// Every recorded attempt, including failed ones that never captured text.
+    pub runs: usize,
+    pub applied: usize,
+    pub failed: usize,
+    /// Words in the captured selections (each ensemble selection counted once).
+    pub words_processed: usize,
+    /// Changed words in applied runs (word diff of original vs result).
+    pub words_corrected: usize,
+    pub minutes_saved: f64,
+    /// Estimated API cost; plan and local runs add nothing.
+    pub estimated_cost_usd: f64,
+    /// Runs billed to a ChatGPT or Claude plan.
+    pub plan_runs: usize,
+    /// Distinct ensemble runs (one per `ensemble_run_id`).
+    pub ensemble_runs: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextAssistOutcomeCounts {
+    pub applied: usize,
+    pub kept: usize,
+    pub no_change: usize,
+    pub cancelled: usize,
+    pub failed: usize,
+    pub other: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimingSummary {
+    /// Runs with a measured value.
+    pub count: usize,
+    pub average_ms: Option<u64>,
+    pub median_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextAssistModelUsage {
+    pub provider: String,
+    pub model: String,
+    pub effort: Option<String>,
+    pub billing: String,
+    pub runs: usize,
+    pub applied: usize,
+    pub failed: usize,
+    pub average_duration_ms: Option<u64>,
+    pub estimated_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextAssistAppUsage {
+    /// Lower-case executable name; `None` when the target app is unknown.
+    pub target_app: Option<String>,
+    pub runs: usize,
+    pub applied: usize,
+    pub failed: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextAssistPresetUsage {
+    pub kind: String,
+    pub preset_id: Option<String>,
+    pub runs: usize,
+    pub applied: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasonCount {
+    /// Sanitized history reason code ("unknown" when none was stored).
+    pub code: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextAssistInsights {
+    pub outcomes: TextAssistOutcomeCounts,
+    /// Runs that returned a result: applied, kept or no change.
+    pub returned_results: usize,
+    /// `applied / returned_results`, `None` without results.
+    pub apply_rate: Option<f64>,
+    /// Over runs that returned a result.
+    pub duration: TimingSummary,
+    pub first_token: TimingSummary,
+    /// Runs that captured text, by provider/model/effort/billing; most runs first.
+    pub models: Vec<TextAssistModelUsage>,
+    /// Most runs first, at most 12.
+    pub apps: Vec<TextAssistAppUsage>,
+    pub presets: Vec<TextAssistPresetUsage>,
+    /// Reasons of failed runs, most frequent first.
+    pub failure_reasons: Vec<ReasonCount>,
+    /// Reasons a result was kept in Vellora instead of pasted, most frequent first.
+    pub kept_reasons: Vec<ReasonCount>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePeriod {
+    pub dictation: DictationUsage,
+    pub text_assist: TextAssistUsage,
+    pub insights: TextAssistInsights,
+}
+
+/// Periods in local time: today, the last 7 and 30 days (including today) and all time.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsagePeriods {
+    pub today: UsagePeriod,
+    pub last7_days: UsagePeriod,
+    pub last30_days: UsagePeriod,
+    pub all_time: UsagePeriod,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageDay {
+    pub date: String,
+    pub day_label: String,
+    pub transcripts: usize,
+    pub dictated_words: usize,
+    pub dictation_cost_usd: f64,
+    pub text_assist_runs: usize,
+    pub text_assist_applied: usize,
+    pub words_corrected: usize,
+    pub text_assist_cost_usd: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageOverview {
+    /// Local date the periods are relative to (YYYY-MM-DD).
+    pub today: String,
+    pub periods: UsagePeriods,
+    /// The last 30 days, oldest first, including days without activity.
+    pub daily: Vec<UsageDay>,
+    pub assumptions: UsageAssumptions,
+    pub dictation_cost_note: String,
+    /// Transcripts whose audio length was estimated from the word count.
+    pub dictation_estimated_from_words_count: usize,
+    /// Transcripts whose cleanup model has no known price.
+    pub dictation_unknown_cleanup_model_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppHealthSnapshot {

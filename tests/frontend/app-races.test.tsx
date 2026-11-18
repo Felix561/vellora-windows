@@ -5,6 +5,7 @@ import { listen, type EventCallback } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App";
 import type { AppSettings, AppSnapshot, TranscriptHistoryItem } from "../../src/lib/types";
+import { emptyUsageOverview } from "../../src/lib/usageStats";
 import { health, settings, stats, transcript, textAssistOverview } from "./fixtures";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -44,6 +45,7 @@ beforeEach(() => {
       case "get_app_health": return health();
       case "get_dashboard_stats": return stats();
       case "get_text_assist_overview": return textAssistOverview();
+      case "get_usage_overview": return emptyUsageOverview();
       case "list_text_assist_runs": return [];
       case "get_start_at_login": return false;
       case "save_settings":

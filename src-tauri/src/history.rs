@@ -10,8 +10,9 @@ use crate::{
     text_providers::Billing,
     types::{
         CleanupMode, DailyStat, DashboardStats, ModelUsageStat, Provider, SttModel,
-        TranscriptHistoryItem,
+        TranscriptHistoryItem, UsageOverview,
     },
+    usage_stats,
 };
 
 fn db_path() -> anyhow::Result<std::path::PathBuf> {
@@ -165,6 +166,43 @@ pub fn insert(item: &TranscriptHistoryItem) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Columns selected by [`TRANSCRIPT_COLUMNS`], in order.
+fn transcript_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TranscriptHistoryItem> {
+    let optional_u64 = |value: Option<i64>| value.map(|value| value as u64);
+    let stt_model_text: String = row.get(2)?;
+    let cleanup_mode_text: String = row.get(4)?;
+    Ok(TranscriptHistoryItem {
+        id: row.get(0)?,
+        created_at: row.get(1)?,
+        provider: Provider::Openai,
+        stt_model: parse_stt_model(&stt_model_text),
+        cleanup_model: row.get(3)?,
+        cleanup_mode: if cleanup_mode_text == "light" {
+            CleanupMode::Light
+        } else {
+            CleanupMode::Off
+        },
+        raw_text: row.get(5)?,
+        final_text: row.get(6)?,
+        duration_ms: optional_u64(row.get(7)?),
+        word_count: row.get::<_, i64>(8)? as usize,
+        char_count: row.get::<_, i64>(9)? as usize,
+        pasted: row.get::<_, i64>(10)? == 1,
+        error: row.get(11)?,
+        pipeline_started_at: row.get(12)?,
+        recording_duration_ms: optional_u64(row.get(13)?),
+        transcription_duration_ms: optional_u64(row.get(14)?),
+        cleanup_duration_ms: optional_u64(row.get(15)?),
+        paste_duration_ms: optional_u64(row.get(16)?),
+        total_pipeline_duration_ms: optional_u64(row.get(17)?),
+    })
+}
+
+const TRANSCRIPT_COLUMNS: &str = "id, created_at, stt_model, cleanup_model, cleanup_mode, \
+    raw_text, final_text, duration_ms, word_count, char_count, pasted, error, \
+    pipeline_started_at, recording_duration_ms, transcription_duration_ms, \
+    cleanup_duration_ms, paste_duration_ms, total_pipeline_duration_ms";
+
 pub fn list(limit: usize) -> anyhow::Result<Vec<TranscriptHistoryItem>> {
     let conn = connection()?;
     let mut stmt = conn
@@ -181,35 +219,7 @@ pub fn list(limit: usize) -> anyhow::Result<Vec<TranscriptHistoryItem>> {
         )
         .context("Could not prepare history query")?;
 
-    let rows = stmt.query_map([limit as i64], |row| {
-        let stt_model_text: String = row.get(2)?;
-        let cleanup_mode_text: String = row.get(4)?;
-        Ok(TranscriptHistoryItem {
-            id: row.get(0)?,
-            created_at: row.get(1)?,
-            provider: Provider::Openai,
-            stt_model: parse_stt_model(&stt_model_text),
-            cleanup_model: row.get(3)?,
-            cleanup_mode: if cleanup_mode_text == "light" {
-                CleanupMode::Light
-            } else {
-                CleanupMode::Off
-            },
-            raw_text: row.get(5)?,
-            final_text: row.get(6)?,
-            duration_ms: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
-            word_count: row.get::<_, i64>(8)? as usize,
-            char_count: row.get::<_, i64>(9)? as usize,
-            pasted: row.get::<_, i64>(10)? == 1,
-            error: row.get(11)?,
-            pipeline_started_at: row.get(12)?,
-            recording_duration_ms: row.get::<_, Option<i64>>(13)?.map(|value| value as u64),
-            transcription_duration_ms: row.get::<_, Option<i64>>(14)?.map(|value| value as u64),
-            cleanup_duration_ms: row.get::<_, Option<i64>>(15)?.map(|value| value as u64),
-            paste_duration_ms: row.get::<_, Option<i64>>(16)?.map(|value| value as u64),
-            total_pipeline_duration_ms: row.get::<_, Option<i64>>(17)?.map(|value| value as u64),
-        })
-    })?;
+    let rows = stmt.query_map([limit as i64], transcript_from_row)?;
 
     rows.collect::<Result<Vec<_>, _>>()
         .context("Could not read transcript history")
@@ -227,37 +237,7 @@ pub fn get(id: &str) -> anyhow::Result<Option<TranscriptHistoryItem>> {
         WHERE id = ?1
         "#,
         [id],
-        |row| {
-            let stt_model_text: String = row.get(2)?;
-            let cleanup_mode_text: String = row.get(4)?;
-            Ok(TranscriptHistoryItem {
-                id: row.get(0)?,
-                created_at: row.get(1)?,
-                provider: Provider::Openai,
-                stt_model: parse_stt_model(&stt_model_text),
-                cleanup_model: row.get(3)?,
-                cleanup_mode: if cleanup_mode_text == "light" {
-                    CleanupMode::Light
-                } else {
-                    CleanupMode::Off
-                },
-                raw_text: row.get(5)?,
-                final_text: row.get(6)?,
-                duration_ms: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
-                word_count: row.get::<_, i64>(8)? as usize,
-                char_count: row.get::<_, i64>(9)? as usize,
-                pasted: row.get::<_, i64>(10)? == 1,
-                error: row.get(11)?,
-                pipeline_started_at: row.get(12)?,
-                recording_duration_ms: row.get::<_, Option<i64>>(13)?.map(|value| value as u64),
-                transcription_duration_ms: row.get::<_, Option<i64>>(14)?.map(|value| value as u64),
-                cleanup_duration_ms: row.get::<_, Option<i64>>(15)?.map(|value| value as u64),
-                paste_duration_ms: row.get::<_, Option<i64>>(16)?.map(|value| value as u64),
-                total_pipeline_duration_ms: row
-                    .get::<_, Option<i64>>(17)?
-                    .map(|value| value as u64),
-            })
-        },
+        transcript_from_row,
     )
     .optional()
     .context("Could not load transcript")
@@ -431,6 +411,36 @@ fn update_text_assist_run_outcome_in(
     Ok(changed > 0)
 }
 
+/// Columns selected by [`TEXT_ASSIST_COLUMNS`], in order.
+fn text_assist_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TextAssistRun> {
+    let optional_u64 = |value: Option<i64>| value.map(|value| value.max(0) as u64);
+    Ok(TextAssistRun {
+        id: row.get(0)?,
+        created_at: row.get(1)?,
+        kind: row.get(2)?,
+        preset_id: row.get(3)?,
+        ensemble_run_id: row.get(4)?,
+        provider: row.get(5)?,
+        model: row.get(6)?,
+        effort: row.get(7)?,
+        billing: row.get(8)?,
+        original_text: row.get(9)?,
+        result_text: row.get(10)?,
+        outcome: row.get(11)?,
+        reason_code: row.get(12)?,
+        target_app: row.get(13)?,
+        duration_ms: optional_u64(row.get(14)?),
+        first_token_ms: optional_u64(row.get(15)?),
+        input_tokens: optional_u64(row.get(16)?),
+        output_tokens: optional_u64(row.get(17)?),
+        estimated_cost_usd: row.get(18)?,
+    })
+}
+
+const TEXT_ASSIST_COLUMNS: &str = "id, created_at, kind, preset_id, ensemble_run_id, provider, \
+    model, effort, billing, original_text, result_text, outcome, reason_code, target_app, \
+    duration_ms, first_token_ms, input_tokens, output_tokens, estimated_cost_usd";
+
 fn list_text_assist_runs_in(conn: &Connection, limit: usize) -> anyhow::Result<Vec<TextAssistRun>> {
     let mut stmt = conn
         .prepare(
@@ -444,30 +454,10 @@ fn list_text_assist_runs_in(conn: &Connection, limit: usize) -> anyhow::Result<V
             "#,
         )
         .context("Could not prepare Text Assist history query")?;
-    let optional_u64 = |value: Option<i64>| value.map(|value| value.max(0) as u64);
-    let rows = stmt.query_map([limit.min(i64::MAX as usize) as i64], |row| {
-        Ok(TextAssistRun {
-            id: row.get(0)?,
-            created_at: row.get(1)?,
-            kind: row.get(2)?,
-            preset_id: row.get(3)?,
-            ensemble_run_id: row.get(4)?,
-            provider: row.get(5)?,
-            model: row.get(6)?,
-            effort: row.get(7)?,
-            billing: row.get(8)?,
-            original_text: row.get(9)?,
-            result_text: row.get(10)?,
-            outcome: row.get(11)?,
-            reason_code: row.get(12)?,
-            target_app: row.get(13)?,
-            duration_ms: optional_u64(row.get(14)?),
-            first_token_ms: optional_u64(row.get(15)?),
-            input_tokens: optional_u64(row.get(16)?),
-            output_tokens: optional_u64(row.get(17)?),
-            estimated_cost_usd: row.get(18)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        [limit.min(i64::MAX as usize) as i64],
+        text_assist_run_from_row,
+    )?;
     rows.collect::<Result<Vec<_>, _>>()
         .context("Could not read Text Assist history")
 }
@@ -542,6 +532,33 @@ fn parse_stt_model(value: &str) -> SttModel {
 pub fn dashboard_stats() -> anyhow::Result<DashboardStats> {
     let items = list(10_000)?;
     Ok(calculate_dashboard_stats(&items, Local::now().date_naive()))
+}
+
+/// Dashboard usage overview: dictation and Text Assist, see `usage_stats`.
+pub fn usage_overview() -> anyhow::Result<UsageOverview> {
+    usage_overview_in(&connection()?, Local::now().date_naive())
+}
+
+/// Streams both tables once; rows are not collected.
+fn usage_overview_in(conn: &Connection, today: NaiveDate) -> anyhow::Result<UsageOverview> {
+    usage_stats::with_cache(|cache| {
+        let mut aggregator = usage_stats::UsageAggregator::new(today, cache);
+        let mut stmt = conn
+            .prepare(&format!("SELECT {TRANSCRIPT_COLUMNS} FROM transcripts"))
+            .context("Could not prepare usage query")?;
+        for item in stmt.query_map([], transcript_from_row)? {
+            aggregator.add_transcript(&item.context("Could not read transcript history")?);
+        }
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {TEXT_ASSIST_COLUMNS} FROM text_assist_runs"
+            ))
+            .context("Could not prepare Text Assist usage query")?;
+        for run in stmt.query_map([], text_assist_run_from_row)? {
+            aggregator.add_run(&run.context("Could not read Text Assist history")?);
+        }
+        Ok(aggregator.finish())
+    })
 }
 
 pub fn calculate_dashboard_stats(
@@ -912,6 +929,47 @@ mod tests {
         assert_eq!(totals.plan_runs, 2);
         assert!((totals.estimated_cost_usd - 0.75).abs() < 1e-12);
         assert!((totals.estimated_cost_today_usd - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn usage_overview_reads_both_tables_including_failed_attempts() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let today = Local::now().date_naive();
+        let noon = today
+            .and_hms_opt(12, 0, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .unwrap()
+            .to_rfc3339();
+        conn.execute(
+            "INSERT INTO transcripts (id, created_at, provider, stt_model, cleanup_mode, raw_text, final_text, word_count, char_count, pasted) VALUES ('t', ?1, 'openai', 'whisper-1', 'off', 'one two three', 'one two three', 3, 13, 1)",
+            [&noon],
+        )
+        .unwrap();
+        insert_text_assist_run_in(&conn, &run("applied", &noon)).unwrap();
+        let mut attempt = run("attempt", &noon);
+        attempt.original_text = String::new();
+        attempt.result_text = None;
+        attempt.outcome = OUTCOME_FAILED.to_string();
+        attempt.reason_code = Some("no_selection".to_string());
+        attempt.target_app = None;
+        attempt.estimated_cost_usd = None;
+        insert_text_assist_run_in(&conn, &attempt).unwrap();
+
+        let overview = usage_overview_in(&conn, today).unwrap();
+        let period = &overview.periods.today;
+        assert_eq!(period.dictation.transcripts, 1);
+        assert_eq!(period.dictation.words, 3);
+        assert_eq!(period.text_assist.runs, 2);
+        assert_eq!(period.text_assist.applied, 1);
+        assert_eq!(period.text_assist.failed, 1);
+        assert_eq!(period.text_assist.words_corrected, 1);
+        assert_eq!(period.insights.failure_reasons[0].code, "no_selection");
+        assert_eq!(period.insights.models.len(), 1);
+        assert_eq!(period.insights.models[0].runs, 1);
+        assert_eq!(overview.daily.last().unwrap().text_assist_runs, 2);
+        assert_eq!(overview.periods.all_time.text_assist.runs, 2);
     }
 
     #[test]

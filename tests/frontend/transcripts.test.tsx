@@ -5,6 +5,7 @@ import { HistoryView } from "../../src/views/HistoryView";
 import { TranscriptActions } from "../../src/views/TranscriptActions";
 import { DashboardView } from "../../src/views/DashboardView";
 import * as api from "../../src/lib/api";
+import { emptyUsageOverview } from "../../src/lib/usageStats";
 import { health, settings, stats, textAssistOverview, transcript } from "./fixtures";
 
 vi.mock("../../src/lib/api", () => ({
@@ -13,6 +14,7 @@ vi.mock("../../src/lib/api", () => ({
   pasteTranscript: vi.fn(),
   deleteTranscript: vi.fn(),
   getDashboardStats: vi.fn(),
+  getUsageOverview: vi.fn(),
   getTextAssistOverview: vi.fn(),
   onTextAssistRunRecorded: vi.fn(),
 }));
@@ -23,6 +25,7 @@ beforeEach(() => {
   vi.mocked(api.pasteTranscript).mockResolvedValue();
   vi.mocked(api.deleteTranscript).mockResolvedValue(true);
   vi.mocked(api.getDashboardStats).mockResolvedValue(stats());
+  vi.mocked(api.getUsageOverview).mockResolvedValue(emptyUsageOverview());
   vi.mocked(api.getTextAssistOverview).mockResolvedValue(textAssistOverview());
   vi.mocked(api.onTextAssistRunRecorded).mockResolvedValue(vi.fn());
 });

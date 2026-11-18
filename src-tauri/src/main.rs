@@ -18,6 +18,7 @@ mod support;
 mod text_assist;
 mod text_providers;
 mod types;
+mod usage_stats;
 mod windows_integration;
 
 use std::{
@@ -494,6 +495,7 @@ fn main() {
             text_assist::commands::clear_text_assist_runs,
             text_assist::commands::copy_text_assist_text,
             text_assist::commands::get_text_assist_overview,
+            text_assist::commands::get_usage_overview,
             text_assist::commands::get_text_provider_keys,
             text_assist::commands::save_text_provider_key,
             text_assist::commands::delete_text_provider_key,

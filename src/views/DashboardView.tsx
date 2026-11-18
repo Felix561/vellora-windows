@@ -1,19 +1,32 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Clock3, CreditCard, Mic, ReceiptText, Sparkles, SpellCheck, WandSparkles } from "lucide-react";
-import { getDashboardStats } from "../lib/api";
-import { BRAND } from "../lib/brand";
-import { formatTinyUsd, formatUsd } from "../lib/format";
-import { useTextAssistOverview } from "../lib/textAssist";
+import { useId, useMemo, useState } from "react";
+import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { formatDuration, formatTinyUsd, formatUsd } from "../lib/format";
+import { effortLabel, kindLabel, providerLabel } from "../lib/textAssist";
+import {
+  billingLabel,
+  formatMinutesSaved,
+  formatRate,
+  reasonLabel,
+  USAGE_PERIODS,
+  useUsageOverview,
+} from "../lib/usageStats";
 import type {
   AppHealthSnapshot,
   AppSettings,
   AppSnapshot,
-  DashboardStats,
   DiagnosticEvent,
+  ReasonCount,
+  RewritePreset,
+  TextAssistInsights,
+  TextAssistPresetUsage,
   TranscriptHistoryItem,
+  UsageDay,
+  UsageOverview,
+  UsagePeriod,
+  UsagePeriodKey,
 } from "../lib/types";
-import velloraMark from "../assets/brand/vellora-mark-paper.png";
 import { TranscriptActions } from "./TranscriptActions";
+import "./dashboard.css";
 
 type Props = {
   settings: AppSettings;
@@ -25,48 +38,12 @@ type Props = {
   diagnostics: DiagnosticEvent[];
 };
 
-const emptyStats: DashboardStats = {
-  totalWords: 0,
-  totalTranscripts: 0,
-  transcriptsToday: 0,
-  wordsToday: 0,
-  estimatedMinutesSaved: 0,
-  averageWordsPerTranscript: 0,
-  mostActiveDay: null,
-  week: [],
-  modelUsage: [],
-  cost: {
-    pricingVersion: "openai-pricing-2026-11-17",
-    estimatedTotalUsd: 0,
-    estimatedTodayUsd: 0,
-    estimatedWeekUsd: 0,
-    estimatedTranscriptionUsd: 0,
-    estimatedCleanupUsd: 0,
-    billableAudioSeconds: 0,
-    measuredAudioSeconds: 0,
-    estimatedAudioSeconds: 0,
-    estimatedFromWordsCount: 0,
-    unknownModelCount: 0,
-    unknownCleanupModelCount: 0,
-    week: [],
-    modelBreakdown: [],
-    note: "Estimated from OpenAI public pricing and local Vellora history. Not official billing data.",
-  },
-};
-
 export function DashboardView({ settings, hasKey, keyStatusKnown = true, snapshot, history, health, diagnostics }: Props) {
-  const [stats, setStats] = useState<DashboardStats>(emptyStats);
-  const [statsError, setStatsError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    getDashboardStats().then((value) => { if (active) { setStats(value); setStatsError(null); } }).catch((error) => { if (active) setStatsError(`Could not load statistics: ${String(error)}`); });
-    return () => { active = false; };
-  }, [history]);
+  // A new transcript changes `history`; Text Assist runs refresh through their event.
+  const { overview, error } = useUsageOverview(history);
+  const [periodKey, setPeriodKey] = useState<UsagePeriodKey>("last7Days");
 
   const recent = history.slice(0, 5);
-  const weekTotal = stats.week.reduce((sum, day) => sum + day.transcriptCount, 0);
-  const maxDay = Math.max(1, ...stats.week.map((day) => day.transcriptCount));
 
   const stateCopy = useMemo(() => {
     if (!keyStatusKnown) return "API key status unavailable";
@@ -78,10 +55,17 @@ export function DashboardView({ settings, hasKey, keyStatusKnown = true, snapsho
   }, [hasKey, keyStatusKnown, snapshot.state, snapshot.lastTranscript?.pasted]);
 
   const recovered = snapshot.lastTranscript;
+  const period = overview?.periods[periodKey] ?? null;
+  const periodInfo = USAGE_PERIODS.find((item) => item.key === periodKey) ?? USAGE_PERIODS[0];
+  const totalTranscripts = overview?.periods.allTime.dictation.transcripts ?? history.length;
 
   return (
     <div className="dashboard-grid">
-      {statsError && <p className="error-banner dashboard-wide" role="alert">{statsError} Statistics may be out of date.</p>}
+      {error && (
+        <p className="error-banner dashboard-wide" role="alert">
+          Could not load statistics: {error}. {overview ? "Statistics may be out of date." : ""}
+        </p>
+      )}
       {recovered && (!recovered.pasted || !settings.saveHistory || !history.some((item) => item.id === recovered.id)) && (
         <section className="panel dashboard-wide recovery-panel">
           <h3>Latest transcript</h3>
@@ -91,57 +75,45 @@ export function DashboardView({ settings, hasKey, keyStatusKnown = true, snapsho
           <TranscriptActions item={recovered} />
         </section>
       )}
-      <section className="panel stat-hero">
-        <div className="hero-heading">
-          <img src={velloraMark} alt="" />
-          <p className="eyebrow">Today's page</p>
-          <h2>{BRAND.appName}</h2>
-          <p className="muted">{BRAND.tagline}</p>
-          <div className="hero-number">{stats.totalWords.toLocaleString()}</div>
-          <p className="muted">words transcribed</p>
-        </div>
-        <div className="hero-divider" />
-        <div className="metric-grid">
-          <Metric icon={<Mic size={18} />} label="Transcriptions today" value={stats.transcriptsToday} />
-          <Metric icon={<CheckCircle2 size={18} />} label="Total transcriptions" value={stats.totalTranscripts} />
-          <Metric icon={<Clock3 size={18} />} label="Time saved" value={`${stats.estimatedMinutesSaved}m`} />
-          <Metric icon={<Sparkles size={18} />} label="Avg words per note" value={stats.averageWordsPerTranscript} />
-        </div>
-      </section>
 
-      <section className="panel weekly-panel">
-        <div className="section-title">
+      <section className="panel dashboard-wide usage-panel" aria-labelledby="usage-title">
+        <div className="usage-header">
           <div>
-            <h3>This week</h3>
-            <p>{weekTotal} transcriptions / Most active: {stats.mostActiveDay ?? "none"}</p>
+            <p className="eyebrow">Dictation and Text Assist</p>
+            <h2 id="usage-title">Your usage</h2>
           </div>
+          <PeriodSwitch value={periodKey} onChange={setPeriodKey} />
         </div>
-        <div className="week-chart" role="img" aria-label={stats.week.map((day) => `${day.dayLabel}: ${day.transcriptCount} transcriptions`).join(", ") || "No weekly activity"}>
-          {stats.week.map((day) => (
-            <div className="day-bar" key={day.date}>
-              <span>{day.transcriptCount || ""}</span>
-              <div style={{ height: `${Math.max(8, (day.transcriptCount / maxDay) * 108)}px` }} />
-              <small>{day.dayLabel}</small>
-            </div>
-          ))}
-        </div>
+        {!overview && !error && <p className="hint" role="status">Loading statistics...</p>}
+        {overview && period && (
+          <UsageSummary overview={overview} period={period} periodDescription={periodInfo.description} settings={settings} />
+        )}
       </section>
 
-      <CostPanel stats={stats} />
+      {overview && <ActivityPanel days={overview.daily} />}
 
-      <TextAssistPanel />
+      {overview && period && (
+        <TextAssistInsightsPanel
+          insights={period.insights}
+          runs={period.textAssist.runs}
+          ensembleRuns={period.textAssist.ensembleRuns}
+          periodDescription={periodInfo.description}
+          presets={settings.textAssist.presets}
+          chord={settings.textAssist.chord}
+        />
+      )}
 
       <section className="panel recent-panel">
         <div className="section-title">
           <div>
             <h3>Recent transcriptions</h3>
-            <p>{stats.totalTranscripts} total transcriptions</p>
+            <p>{totalTranscripts.toLocaleString()} total transcriptions</p>
           </div>
         </div>
         <div className="history-list compact-list">
           {recent.length === 0 && (
             <p className="empty">
-              Your first page is still quiet. Hold Ctrl + Win and speak when you're ready.
+              Your first page is still quiet. Hold {settings.hotkey.replace(/\+/g, " + ")} and speak when you're ready.
             </p>
           )}
           {recent.map((item) => (
@@ -188,16 +160,347 @@ export function DashboardView({ settings, hasKey, keyStatusKnown = true, snapsho
   );
 }
 
-function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: React.ReactNode }) {
+function PeriodSwitch({ value, onChange }: { value: UsagePeriodKey; onChange: (value: UsagePeriodKey) => void }) {
   return (
-    <div className="metric">
-      {icon}
-      <div>
-        <strong>{value}</strong>
-        <span>{label}</span>
-      </div>
+    <div className="segmented" role="group" aria-label="Statistics period">
+      {USAGE_PERIODS.map((item) => (
+        <button key={item.key} type="button" aria-pressed={item.key === value} onClick={() => onChange(item.key)}>
+          {item.label}
+        </button>
+      ))}
     </div>
   );
+}
+
+function UsageSummary({ overview, period, periodDescription, settings }: {
+  overview: UsageOverview;
+  period: UsagePeriod;
+  periodDescription: string;
+  settings: AppSettings;
+}) {
+  const { dictation, textAssist } = period;
+  const all = overview.periods.allTime;
+  const nothingYet = all.dictation.transcripts === 0 && all.textAssist.runs === 0;
+  const { dictationWordsPerMinute, secondsPerCorrectedWord } = overview.assumptions;
+  return (
+    <>
+      {nothingYet && (
+        <p className="usage-empty">
+          Nothing recorded yet. Hold {settings.hotkey.replace(/\+/g, " + ")} to dictate, or select text in any app and press {settings.textAssist.chord.replace(/\+/g, " + ")} to fix it.
+        </p>
+      )}
+      <div className="usage-columns">
+        <UsageColumn
+          title="Dictation"
+          series="dictation"
+          items={[
+            ["Words dictated", dictation.words.toLocaleString()],
+            ["Transcriptions", dictation.transcripts.toLocaleString()],
+            ["Time saved", formatMinutesSaved(dictation.minutesSaved)],
+            ["Estimated spend", formatUsd(dictation.estimatedCostUsd)],
+          ]}
+        />
+        <UsageColumn
+          title="Text Assist"
+          series="assist"
+          items={[
+            ["Texts fixed (applied)", `${textAssist.applied.toLocaleString()} of ${textAssist.runs.toLocaleString()} ${textAssist.runs === 1 ? "run" : "runs"}`],
+            ["Words corrected", textAssist.wordsCorrected.toLocaleString()],
+            ["Time saved", formatMinutesSaved(textAssist.minutesSaved)],
+            ["Estimated spend", formatUsd(textAssist.estimatedCostUsd)],
+          ]}
+          footnote={`${textAssist.wordsProcessed.toLocaleString()} words processed${textAssist.planRuns > 0 ? ` / ${textAssist.planRuns.toLocaleString()} plan ${textAssist.planRuns === 1 ? "run" : "runs"}` : ""}`}
+        />
+        <UsageColumn
+          title="Together"
+          series="total"
+          items={[
+            ["Time saved", formatMinutesSaved(dictation.minutesSaved + textAssist.minutesSaved)],
+            ["Estimated spend", formatUsd(dictation.estimatedCostUsd + textAssist.estimatedCostUsd)],
+            ["Uses", (dictation.transcripts + textAssist.runs).toLocaleString()],
+          ]}
+          footnote={`Totals ${periodDescription}`}
+        />
+      </div>
+      <p className="hint usage-basis">
+        Time saved is a conservative estimate: 1 minute per {dictationWordsPerMinute} dictated words, and {secondsPerCorrectedWord} seconds per corrected word in applied Text Assist runs.
+      </p>
+      <p className="cost-note">
+        {overview.dictationCostNote}
+        {overview.dictationEstimatedFromWordsCount > 0 && ` ${overview.dictationEstimatedFromWordsCount} older ${overview.dictationEstimatedFromWordsCount === 1 ? "note" : "notes"} estimated from word count.`}
+        {overview.dictationUnknownCleanupModelCount > 0 && ` Cleanup cost excluded for ${overview.dictationUnknownCleanupModelCount} ${overview.dictationUnknownCleanupModelCount === 1 ? "note" : "notes"} with an unpriced model.`}
+        {" "}Text Assist spend is estimated from provider list prices; runs billed to a ChatGPT or Claude plan add no API cost here. These are estimates, not billing data.
+      </p>
+    </>
+  );
+}
+
+function UsageColumn({ title, series, items, footnote }: {
+  title: string;
+  series: "dictation" | "assist" | "total";
+  items: [string, string][];
+  footnote?: string;
+}) {
+  const id = useId();
+  return (
+    <section className={`usage-column series-${series}`} aria-labelledby={id}>
+      <h3 id={id}>{series !== "total" && <span className="series-key" aria-hidden="true" />}{title}</h3>
+      <dl>
+        {items.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      {footnote && <p className="usage-footnote">{footnote}</p>}
+    </section>
+  );
+}
+
+/** Rounds a maximum up to 1, 2 or 5 times a power of ten for the axis. */
+function niceMax(value: number) {
+  if (value <= 4) return 4;
+  const power = 10 ** Math.floor(Math.log10(value));
+  for (const step of [1, 2, 5, 10]) {
+    if (step * power >= value) return step * power;
+  }
+  return 10 * power;
+}
+
+function ActivityPanel({ days }: { days: UsageDay[] }) {
+  const [range, setRange] = useState<7 | 30>(7);
+  const visible = days.slice(-range);
+  const max = niceMax(Math.max(0, ...visible.map((day) => Math.max(day.transcripts, day.textAssistRuns))));
+  const totals = visible.reduce((sum, day) => ({ transcripts: sum.transcripts + day.transcripts, runs: sum.runs + day.textAssistRuns }), { transcripts: 0, runs: 0 });
+  const busiest = visible.reduce<UsageDay | null>((best, day) => {
+    const uses = day.transcripts + day.textAssistRuns;
+    return uses > 0 && (!best || uses > best.transcripts + best.textAssistRuns) ? day : best;
+  }, null);
+  const summary = totals.transcripts + totals.runs === 0
+    ? `No activity in the last ${range} days.`
+    : `Last ${range} days: ${totals.transcripts} transcriptions and ${totals.runs} Text Assist runs.${busiest ? ` Busiest day ${formatDay(busiest.date)}.` : ""}`;
+  return (
+    <section className="panel dashboard-wide activity-panel" aria-labelledby="activity-title">
+      <div className="section-title">
+        <div>
+          <h3 id="activity-title">Activity</h3>
+          <p>Transcriptions and Text Assist runs per day</p>
+        </div>
+        <div className="segmented" role="group" aria-label="Activity range">
+          {([7, 30] as const).map((value) => (
+            <button key={value} type="button" aria-pressed={range === value} onClick={() => setRange(value)}>{value} days</button>
+          ))}
+        </div>
+      </div>
+      <ul className="chart-legend" aria-label="Legend">
+        <li><span className="series-key series-dictation" aria-hidden="true" />Dictation <b>{totals.transcripts.toLocaleString()}</b></li>
+        <li><span className="series-key series-assist" aria-hidden="true" />Text Assist <b>{totals.runs.toLocaleString()}</b></li>
+      </ul>
+      <div className="activity-chart" role="img" aria-label={summary}>
+        <div className="activity-axis" aria-hidden="true">
+          {(max % 2 === 0 ? [max, max / 2, 0] : [max, 0]).map((tick) => <span key={tick}>{tick.toLocaleString()}</span>)}
+        </div>
+        <div className={`activity-plot range-${range}`} aria-hidden="true">
+          {visible.map((day, index) => (
+            <div className="activity-day" key={day.date}>
+              <div className="activity-bars">
+                <i className="series-dictation" style={{ height: `${(day.transcripts / max) * 100}%` }} />
+                <i className="series-assist" style={{ height: `${(day.textAssistRuns / max) * 100}%` }} />
+              </div>
+              <small>{range === 7 ? day.dayLabel : (visible.length - 1 - index) % 7 === 0 ? shortDate(day.date) : ""}</small>
+              <span className="activity-tip">
+                {formatDay(day.date)}<br />
+                {day.transcripts} dictation / {day.textAssistRuns} Text Assist
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <table className="visually-hidden">
+        <caption>Daily activity, last {range} days</caption>
+        <thead>
+          <tr><th scope="col">Day</th><th scope="col">Transcriptions</th><th scope="col">Words dictated</th><th scope="col">Text Assist runs</th><th scope="col">Texts fixed</th><th scope="col">Words corrected</th></tr>
+        </thead>
+        <tbody>
+          {visible.map((day) => (
+            <tr key={day.date}>
+              <th scope="row">{formatDay(day.date)}</th>
+              <td>{day.transcripts}</td><td>{day.dictatedWords}</td><td>{day.textAssistRuns}</td><td>{day.textAssistApplied}</td><td>{day.wordsCorrected}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+const outcomeSegments = [
+  { key: "applied", label: "Applied" },
+  { key: "noChange", label: "No change needed" },
+  { key: "kept", label: "Kept in Vellora" },
+  { key: "cancelled", label: "Cancelled" },
+  { key: "failed", label: "Failed" },
+] as const;
+
+function TextAssistInsightsPanel({ insights, runs, ensembleRuns, periodDescription, presets, chord }: {
+  insights: TextAssistInsights;
+  runs: number;
+  ensembleRuns: number;
+  periodDescription: string;
+  presets: RewritePreset[];
+  chord: string;
+}) {
+  const { outcomes } = insights;
+  const segments = outcomeSegments.map((segment) => ({ ...segment, count: outcomes[segment.key] }));
+  const outcomeTotal = segments.reduce((sum, segment) => sum + segment.count, 0);
+  return (
+    <section className="panel dashboard-wide insights-panel" aria-labelledby="insights-title">
+      <div className="section-title">
+        <div>
+          <h3 id="insights-title">Text Assist insights</h3>
+          <p>{runs.toLocaleString()} {runs === 1 ? "run" : "runs"} {periodDescription}{ensembleRuns > 0 ? ` / ${ensembleRuns.toLocaleString()} ${ensembleRuns === 1 ? "ensemble" : "ensembles"}` : ""}</p>
+        </div>
+      </div>
+      {runs === 0 ? (
+        <p className="empty">No Text Assist runs {periodDescription}. Select text in any app and press {chord.replace(/\+/g, " + ")} to fix it.</p>
+      ) : (
+        <div className="insights-grid">
+          <div className="insight-block">
+            <h4>Outcomes</h4>
+            <div className="insight-figures">
+              <div className="usage-figure"><strong>{formatRate(insights.applyRate)}</strong><span>Apply rate ({outcomes.applied} of {insights.returnedResults} results)</span></div>
+            </div>
+            {outcomeTotal > 0 && (
+              <div className="outcome-bar" role="img" aria-label={`Outcomes: ${segments.filter((segment) => segment.count > 0).map((segment) => `${segment.label} ${segment.count}`).join(", ")}`}>
+                {segments.filter((segment) => segment.count > 0).map((segment) => (
+                  <i key={segment.key} className={`outcome-${segment.key}`} style={{ flexGrow: segment.count }} />
+                ))}
+              </div>
+            )}
+            <ul className="outcome-legend">
+              {segments.map((segment) => (
+                <li key={segment.key}><span className={`outcome-key outcome-${segment.key}`} aria-hidden="true" />{segment.label}<b>{segment.count.toLocaleString()}</b></li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="insight-block">
+            <h4>Speed</h4>
+            <dl className="insight-list">
+              <div><dt>Median time to result</dt><dd>{formatOptionalMs(insights.duration.medianMs)}</dd></div>
+              <div><dt>Average time to result</dt><dd>{formatOptionalMs(insights.duration.averageMs)}</dd></div>
+              <div><dt>Median first token</dt><dd>{formatOptionalMs(insights.firstToken.medianMs)}</dd></div>
+              <div><dt>Average first token</dt><dd>{formatOptionalMs(insights.firstToken.averageMs)}</dd></div>
+            </dl>
+          </div>
+
+          <div className="insight-block insight-wide">
+            <h4 id="insights-models">Models</h4>
+            {insights.models.length === 0 ? <p className="hint">No model was called {periodDescription}.</p> : (
+              <div className="table-scroll">
+                <table className="insight-table" aria-labelledby="insights-models">
+                  <thead>
+                    <tr><th scope="col">Model</th><th scope="col">Billing</th><th scope="col">Runs</th><th scope="col">Applied</th><th scope="col">Avg time</th><th scope="col">Est. cost</th></tr>
+                  </thead>
+                  <tbody>
+                    {insights.models.map((model) => (
+                      <tr key={`${model.provider}/${model.model}/${model.effort ?? ""}/${model.billing}`}>
+                        <th scope="row"><strong>{model.model}</strong><span>{providerLabel(model.provider)}{model.effort ? ` / effort: ${effortLabel(model.effort)}` : ""}</span></th>
+                        <td>{billingLabel(model.billing)}</td>
+                        <td>{model.runs.toLocaleString()}</td>
+                        <td>{model.applied.toLocaleString()}</td>
+                        <td>{formatOptionalMs(model.averageDurationMs)}</td>
+                        <td>{model.billing === "api" ? formatTinyUsd(model.estimatedCostUsd) : "Plan / none"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="insight-block">
+            <h4 id="insights-apps">Top apps</h4>
+            <ul className="meter-list" aria-labelledby="insights-apps">
+              {insights.apps.map((app) => (
+                <MeterRow
+                  key={app.targetApp ?? "unknown"}
+                  label={app.targetApp ?? "Unknown app"}
+                  value={app.runs}
+                  max={insights.apps[0]?.runs ?? 1}
+                  detail={`${app.applied} applied${app.failed ? `, ${app.failed} failed` : ""}`}
+                />
+              ))}
+            </ul>
+          </div>
+
+          <div className="insight-block">
+            <h4 id="insights-presets">Presets</h4>
+            {insights.presets.length === 0 ? <p className="hint">No captured text {periodDescription}.</p> : (
+              <ul className="meter-list" aria-labelledby="insights-presets">
+                {insights.presets.map((preset) => (
+                  <MeterRow
+                    key={`${preset.kind}/${preset.presetId ?? ""}`}
+                    label={presetLabel(preset, presets)}
+                    value={preset.runs}
+                    max={insights.presets[0]?.runs ?? 1}
+                    detail={`${preset.applied} applied`}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <ReasonList id="insights-failures" title="Why runs failed" reasons={insights.failureReasons} empty={`No failed runs ${periodDescription}.`} />
+          <ReasonList id="insights-kept" title="Why results were kept, not pasted" reasons={insights.keptReasons} empty={`Every result was pasted or needed no change ${periodDescription}.`} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MeterRow({ label, value, max, detail }: { label: string; value: number; max: number; detail: string }) {
+  return (
+    <li className="meter-row">
+      <span className="meter-label">{label}</span>
+      <b>{value.toLocaleString()} {value === 1 ? "run" : "runs"}</b>
+      <span className="meter-track" aria-hidden="true"><i style={{ width: `${Math.max(2, (value / Math.max(1, max)) * 100)}%` }} /></span>
+      <small>{detail}</small>
+    </li>
+  );
+}
+
+function ReasonList({ id, title, reasons, empty }: { id: string; title: string; reasons: ReasonCount[]; empty: string }) {
+  return (
+    <div className="insight-block">
+      <h4 id={id}>{title}</h4>
+      {reasons.length === 0 ? <p className="hint">{empty}</p> : (
+        <ul className="reason-list" aria-labelledby={id}>
+          {reasons.map((reason) => (
+            <li key={reason.code}><span>{reasonLabel(reason.code)}</span><b>{reason.count.toLocaleString()}</b></li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function presetLabel(preset: TextAssistPresetUsage, presets: RewritePreset[]) {
+  const name = presets.find((item) => item.id === preset.presetId)?.name;
+  if (preset.kind === "polish") return kindLabel("polish");
+  const presetName = name ?? (preset.presetId ? humanize(preset.presetId) : null);
+  if (preset.kind === "ensemble") return presetName ? `Ensemble: ${presetName}` : "Ensemble";
+  return presetName ?? kindLabel(preset.kind);
+}
+
+function humanize(value: string) {
+  const words = value.replace(/[_-]+/g, " ").trim();
+  return words ? `${words[0].toUpperCase()}${words.slice(1)}` : value;
+}
+
+function formatOptionalMs(value: number | null) {
+  return value === null ? "n/a" : formatDuration(value);
 }
 
 function formatMs(value?: number | null) {
@@ -206,83 +509,17 @@ function formatMs(value?: number | null) {
   return `${(value / 1000).toFixed(1)}s`;
 }
 
-function CostPanel({ stats }: { stats: DashboardStats }) {
-  const cost = stats.cost;
-  const maxCost = Math.max(0.0001, ...cost.week.map((day) => day.estimatedCostUsd));
-  return (
-    <section className="panel cost-panel">
-      <div className="section-title">
-        <div>
-          <h3>Estimated spend</h3>
-          <p>OpenAI estimate / not official billing</p>
-        </div>
-        <ReceiptText size={20} />
-      </div>
-      <div className="cost-total">{formatUsd(cost.estimatedTotalUsd)}</div>
-      <div className="cost-metrics">
-        <Metric icon={<Clock3 size={18} />} label="Today" value={formatUsd(cost.estimatedTodayUsd)} />
-        <Metric icon={<Sparkles size={18} />} label="This week" value={formatUsd(cost.estimatedWeekUsd)} />
-        <Metric icon={<Mic size={18} />} label="Audio minutes" value={formatMinutes(cost.billableAudioSeconds)} />
-        <Metric icon={<CheckCircle2 size={18} />} label="Cleanup" value={formatUsd(cost.estimatedCleanupUsd)} />
-      </div>
-      <div className="cost-bars" role="img" aria-label={`Estimated spending over the last seven days: ${cost.week.map((day) => `${day.dayLabel}: ${formatTinyUsd(day.estimatedCostUsd)}`).join(", ") || "No spending"}`}>
-        {cost.week.map((day) => (
-          <div className="cost-day" key={day.date}>
-            <span>{day.estimatedCostUsd > 0 ? formatTinyUsd(day.estimatedCostUsd) : ""}</span>
-            <div style={{ height: `${Math.max(8, (day.estimatedCostUsd / maxCost) * 92)}px` }} />
-            <small>{day.dayLabel}</small>
-          </div>
-        ))}
-      </div>
-      <div className="cost-breakdown">
-        {cost.modelBreakdown.slice(0, 4).map((model) => (
-          <div className="cost-model-row" key={model.model}>
-            <strong>{model.model}</strong>
-            <span>{model.transcriptionCount} notes / {formatMinutes(model.audioSeconds)}</span>
-            <b>{formatTinyUsd(model.estimatedCostUsd)}</b>
-          </div>
-        ))}
-      </div>
-      <p className="cost-note">
-        {cost.note}
-        {cost.estimatedFromWordsCount > 0 && ` ${cost.estimatedFromWordsCount} older notes estimated from word count.`}
-        {cost.unknownCleanupModelCount > 0 && ` Cleanup cost excluded for ${cost.unknownCleanupModelCount} ${cost.unknownCleanupModelCount === 1 ? "note" : "notes"} with an unpriced model.`}
-      </p>
-    </section>
-  );
+function parseDay(date: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  return new Date(year, (month ?? 1) - 1, day ?? 1);
 }
 
-/** Text Assist totals, kept separate from dictation spend (spec section 7.4). */
-function TextAssistPanel() {
-  const { overview, error } = useTextAssistOverview();
-  const totals = overview?.totals;
-  return (
-    <section className="panel ta-dashboard-panel" aria-labelledby="ta-dashboard-title">
-      <div className="section-title">
-        <div>
-          <h3 id="ta-dashboard-title">Text Assist</h3>
-          <p>Selection fixes / separate from dictation spend</p>
-        </div>
-        <SpellCheck size={20} aria-hidden="true" />
-      </div>
-      {error && <p className="error-text" role="alert">Could not load Text Assist totals: {error}</p>}
-      {!totals && !error && <p className="hint" role="status">Loading Text Assist totals...</p>}
-      {totals && (
-        <>
-          <div className="cost-metrics">
-            <Metric icon={<WandSparkles size={18} />} label="Runs" value={totals.runs.toLocaleString()} />
-            <Metric icon={<CheckCircle2 size={18} />} label="Applied" value={totals.appliedRuns.toLocaleString()} />
-            <Metric icon={<Clock3 size={18} />} label="Estimated today" value={formatUsd(totals.estimatedCostTodayUsd)} />
-            <Metric icon={<ReceiptText size={18} />} label="Estimated total" value={formatUsd(totals.estimatedCostUsd)} />
-            <Metric icon={<CreditCard size={18} />} label="Plan runs" value={totals.planRuns.toLocaleString()} />
-          </div>
-          <p className="cost-note">
-            Estimated from provider list prices and local Text Assist history. Estimates are not a billing ledger. Plan runs are billed to your subscription and add no API cost here.
-          </p>
-        </>
-      )}
-    </section>
-  );
+function formatDay(date: string) {
+  return parseDay(date).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+}
+
+function shortDate(date: string) {
+  return parseDay(date).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 function SystemStatusPanel({
@@ -336,11 +573,6 @@ function SystemStatusPanel({
       )}
     </section>
   );
-}
-
-function formatMinutes(seconds: number) {
-  if (!seconds) return "0m";
-  return `${Math.max(1, Math.round(seconds / 60))}m`;
 }
 
 function formatRelative(value: string) {

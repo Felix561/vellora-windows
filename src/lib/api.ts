@@ -18,6 +18,7 @@ import type {
   TextProviderKeys,
   KeyedTextProvider,
   TextCliStatus,
+  UsageOverview,
 } from "./types";
 
 export function getSettings() {
@@ -158,6 +159,11 @@ export function copyTextAssistText(text: string) {
 
 export function getTextAssistOverview() {
   return invoke<TextAssistOverview>("get_text_assist_overview");
+}
+
+/** Dashboard statistics: dictation and Text Assist per period, a 30-day series and breakdowns. */
+export function getUsageOverview() {
+  return invoke<UsageOverview>("get_usage_overview");
 }
 
 /** Emitted to the main window after a Text Assist run is saved; the payload is the run id. */

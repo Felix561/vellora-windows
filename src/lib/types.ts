@@ -364,3 +364,123 @@ export type ModelCostStat = {
   transcriptionCount: number;
   audioSeconds: number;
 };
+
+// Usage overview (Dashboard), mirrors `UsageOverview` in src-tauri/src/types.rs.
+// Counts only: it never contains selected, original, result or transcript text.
+
+export type UsageAssumptions = {
+  /** Dictated words per minute of typing saved. */
+  dictationWordsPerMinute: number;
+  /** Seconds saved per corrected word in an applied Text Assist run. */
+  secondsPerCorrectedWord: number;
+};
+
+export type DictationUsage = {
+  transcripts: number;
+  words: number;
+  minutesSaved: number;
+  estimatedCostUsd: number;
+};
+
+export type TextAssistUsage = {
+  /** Every recorded attempt, including failed ones that never captured text. */
+  runs: number;
+  applied: number;
+  failed: number;
+  wordsProcessed: number;
+  wordsCorrected: number;
+  minutesSaved: number;
+  estimatedCostUsd: number;
+  planRuns: number;
+  ensembleRuns: number;
+};
+
+export type TextAssistOutcomeCounts = {
+  applied: number;
+  kept: number;
+  noChange: number;
+  cancelled: number;
+  failed: number;
+  other: number;
+};
+
+export type TimingSummary = {
+  count: number;
+  averageMs: number | null;
+  medianMs: number | null;
+};
+
+export type TextAssistModelUsage = {
+  provider: string;
+  model: string;
+  effort: string | null;
+  billing: string;
+  runs: number;
+  applied: number;
+  failed: number;
+  averageDurationMs: number | null;
+  estimatedCostUsd: number;
+};
+
+export type TextAssistAppUsage = {
+  targetApp: string | null;
+  runs: number;
+  applied: number;
+  failed: number;
+};
+
+export type TextAssistPresetUsage = {
+  kind: string;
+  presetId: string | null;
+  runs: number;
+  applied: number;
+};
+
+export type ReasonCount = {
+  code: string;
+  count: number;
+};
+
+export type TextAssistInsights = {
+  outcomes: TextAssistOutcomeCounts;
+  returnedResults: number;
+  applyRate: number | null;
+  duration: TimingSummary;
+  firstToken: TimingSummary;
+  models: TextAssistModelUsage[];
+  apps: TextAssistAppUsage[];
+  presets: TextAssistPresetUsage[];
+  failureReasons: ReasonCount[];
+  keptReasons: ReasonCount[];
+};
+
+export type UsagePeriod = {
+  dictation: DictationUsage;
+  textAssist: TextAssistUsage;
+  insights: TextAssistInsights;
+};
+
+export type UsagePeriodKey = "today" | "last7Days" | "last30Days" | "allTime";
+
+export type UsageDay = {
+  date: string;
+  dayLabel: string;
+  transcripts: number;
+  dictatedWords: number;
+  dictationCostUsd: number;
+  textAssistRuns: number;
+  textAssistApplied: number;
+  wordsCorrected: number;
+  textAssistCostUsd: number;
+};
+
+export type UsageOverview = {
+  today: string;
+  periods: Record<UsagePeriodKey, UsagePeriod>;
+  /** The last 30 days, oldest first. */
+  daily: UsageDay[];
+  assumptions: UsageAssumptions;
+  dictationCostNote: string;
+  dictationEstimatedFromWordsCount: number;
+  dictationUnknownCleanupModelCount: number;
+};

@@ -1,11 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../../src/App";
 import { SETUP_STORAGE_KEY } from "../../src/lib/help";
-import { health, settings, stats, textAssistOverview } from "./fixtures";
+import { emptyUsageOverview } from "../../src/lib/usageStats";
+import { cliStatus, health, settings, stats, textAssistOverview, textProviderKeys } from "./fixtures";
 
 // Mock the native boundary, leaving the app and its API wrappers connected.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -27,7 +28,10 @@ beforeEach(() => {
       case "get_app_health": return health();
       case "get_dashboard_stats": return stats();
       case "get_text_assist_overview": return textAssistOverview();
+      case "get_usage_overview": return emptyUsageOverview();
       case "list_text_assist_runs": return [];
+      case "get_text_provider_keys": return textProviderKeys();
+      case "get_text_cli_status": return { codex: cliStatus(), claude: cliStatus() };
       case "get_support_info": return { version: "0.2.18", platform: "windows", architecture: "x86_64", startupPhase: "ready", ready: true, singleInstance: true, keyConfigured: keyStatus === true, microphoneAvailable: true, dictationState: "idle" };
       case "get_start_at_login": return false;
       default: throw new Error(`Unexpected native command in regression test: ${command}`);
@@ -35,10 +39,38 @@ beforeEach(() => {
   });
 });
 
+describe("Text Assist model navigation", () => {
+  it("opens AI Models on the Text models tab from Settings, Text Assist", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { level: 1, name: "Dashboard" });
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(await screen.findByRole("tab", { name: "Text Assist" }));
+    await user.click(await screen.findByRole("button", { name: /Choose models/ }));
+    expect(await screen.findByRole("heading", { level: 1, name: "AI Models" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Text models", selected: true })).toBeInTheDocument();
+  });
+
+  it("opens the Transcription tab from the sidebar", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { level: 1, name: "Dashboard" });
+    await user.click(screen.getByRole("button", { name: "AI Models" }));
+    expect(await screen.findByRole("tab", { name: "Transcription", selected: true })).toBeInTheDocument();
+  });
+});
+
 describe("setup entry and persistence", () => {
   it("leaves existing users on the Dashboard when a key is already saved", async () => {
     render(<App />);
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    // The combined usage overview replaces the separate Text Assist card.
+    const usage = await screen.findByRole("region", { name: "Your usage" });
+    expect(within(usage).getByRole("region", { name: "Dictation" })).toBeInTheDocument();
+    expect(within(usage).getByRole("region", { name: "Text Assist" })).toBeInTheDocument();
+    expect(within(usage).getByRole("button", { name: "7 days", pressed: true })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Activity" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Estimated spend" })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Guided setup" })).not.toBeInTheDocument();
     expect(localStorage.getItem(SETUP_STORAGE_KEY)).toBeNull();
   });

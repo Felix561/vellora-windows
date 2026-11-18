@@ -75,13 +75,17 @@ pub fn list_text_assist_runs(
 #[tauri::command]
 pub fn delete_text_assist_run(window: tauri::WebviewWindow, id: String) -> Result<bool, String> {
     crate::require_main_window(&window)?;
-    history::delete_text_assist_run(&id).map_err(to_string)
+    let deleted = history::delete_text_assist_run(&id).map_err(to_string)?;
+    runtime::forget_kept(Some(&id));
+    Ok(deleted)
 }
 
 #[tauri::command]
 pub fn clear_text_assist_runs(window: tauri::WebviewWindow) -> Result<usize, String> {
     crate::require_main_window(&window)?;
-    history::clear_text_assist_runs().map_err(to_string)
+    let cleared = history::clear_text_assist_runs().map_err(to_string)?;
+    runtime::forget_kept(None);
+    Ok(cleared)
 }
 
 /// Copies a run's result (or original, when there is no result) to the clipboard.
@@ -102,6 +106,16 @@ pub fn get_text_assist_overview(
         models: models(),
         last_kept: runtime::last_kept_result(),
     })
+}
+
+/// Dashboard statistics for dictation and Text Assist together (periods, 30-day series,
+/// Text Assist breakdowns). Contains counts only, never selected or result text.
+#[tauri::command]
+pub fn get_usage_overview(
+    window: tauri::WebviewWindow,
+) -> Result<crate::types::UsageOverview, String> {
+    crate::require_main_window(&window)?;
+    history::usage_overview().map_err(to_string)
 }
 
 /// Which provider keys are saved (never the keys themselves).
