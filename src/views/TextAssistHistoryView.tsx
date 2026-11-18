@@ -37,6 +37,11 @@ function preview(text: string) {
   return line.length > 140 ? `${line.slice(0, 139)}…` : line;
 }
 
+/** A failed attempt that never captured text (the row holds no text, only the reason). */
+function capturedNothing(run: TextAssistRun) {
+  return run.originalText === "" && run.resultText === null;
+}
+
 function showsReason(run: TextAssistRun) {
   return run.outcome === "kept" || run.outcome === "failed";
 }
@@ -209,7 +214,9 @@ export function TextAssistHistoryView({ saveHistory }: Props) {
                       <span className="ta-run-app">{run.targetApp ?? "Unknown app"}</span>
                       <OutcomeBadge outcome={run.outcome} />
                     </span>
-                    <span className="ta-run-preview">{preview(run.originalText)}</span>
+                    <span className={capturedNothing(run) ? "ta-run-preview hint" : "ta-run-preview"}>
+                      {capturedNothing(run) ? "Nothing was captured" : preview(run.originalText)}
+                    </span>
                     <span className="history-facts">
                       <span>{formatTime(run.createdAt)}</span>
                       <span>{run.model} · {effortLabel(run.effort)}</span>
@@ -300,6 +307,8 @@ function RunDetails({ run, busy, confirmDelete, deleteButton, cancelDeleteButton
       </div>
       {reason && run.outcome !== "applied" && run.outcome !== "no_change" && <p className={run.outcome === "failed" ? "error-text" : "hint"}>{reason}</p>}
 
+      {capturedNothing(run) && <p className="hint">Vellora could not read a selection in this app, so no text was sent or saved.</p>}
+
       {run.resultText !== null && diff && (
         <div className="ta-diff-block">
           <h5>Changes <span className="ta-change-count">({countChanges(diff)} {countChanges(diff) === 1 ? "change" : "changes"})</span></h5>
@@ -310,22 +319,26 @@ function RunDetails({ run, busy, confirmDelete, deleteButton, cancelDeleteButton
       )}
       {run.resultText !== null && !diff && <p className="hint">This text is too long for a word-by-word comparison. The original and result are shown separately.</p>}
 
-      <div className="ta-compare">
-        <div>
-          <h5>Original</h5>
-          <p className="transcript-preview">{run.originalText}</p>
+      {!capturedNothing(run) && (
+        <div className="ta-compare">
+          <div>
+            <h5>Original</h5>
+            <p className="transcript-preview">{run.originalText}</p>
+          </div>
+          <div>
+            <h5>Result</h5>
+            {run.resultText !== null ? <p className="transcript-preview">{run.resultText}</p> : <p className="hint">No result was produced.</p>}
+          </div>
         </div>
-        <div>
-          <h5>Result</h5>
-          {run.resultText !== null ? <p className="transcript-preview">{run.resultText}</p> : <p className="hint">No result was produced.</p>}
-        </div>
-      </div>
+      )}
 
       <div className="transcript-controls">
         <div className="history-actions">
-          <button onClick={onCopy} disabled={busy}>
-            <Clipboard size={14} aria-hidden="true" /> {run.resultText !== null ? "Copy result" : "Copy original"}
-          </button>
+          {!capturedNothing(run) && (
+            <button onClick={onCopy} disabled={busy}>
+              <Clipboard size={14} aria-hidden="true" /> {run.resultText !== null ? "Copy result" : "Copy original"}
+            </button>
+          )}
           <button ref={deleteButton} className="danger-text" onClick={onAskDelete} disabled={busy || confirmDelete}>
             <Trash2 size={14} aria-hidden="true" /> Delete
           </button>
