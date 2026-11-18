@@ -108,6 +108,9 @@ pub enum GuardIssue {
     Wrapper,
     ProtectedTokens,
     LineCount,
+    /// A line's leading or trailing whitespace, or its tabs, changed: indentation of code or
+    /// YAML, Markdown hard line breaks (two trailing spaces), tab-separated columns.
+    Whitespace,
     TooManyChanges,
     LengthChange,
 }
@@ -122,6 +125,7 @@ impl GuardIssue {
             GuardIssue::Wrapper => "guard_wrapper",
             GuardIssue::ProtectedTokens => "guard_markup",
             GuardIssue::LineCount => "guard_line_count",
+            GuardIssue::Whitespace => "guard_whitespace",
             GuardIssue::TooManyChanges => "guard_too_many_changes",
             GuardIssue::LengthChange => "guard_length",
         }
@@ -176,6 +180,8 @@ pub fn check(original_core: &str, result_core: &str, completed: bool) -> GuardRe
     }
     if original.matches('\n').count() != result.matches('\n').count() {
         issues.push(GuardIssue::LineCount);
+    } else if line_whitespace_changed(&original, &result) {
+        issues.push(GuardIssue::Whitespace);
     }
     // max(2, ceil(0.4 * words))
     let word_limit = ((2 * stats.original_words).div_ceil(5)).max(2);
@@ -189,6 +195,20 @@ pub fn check(original_core: &str, result_core: &str, completed: bool) -> GuardRe
         issues.push(GuardIssue::LengthChange);
     }
     stats.into_report(issues)
+}
+
+/// Per line, the leading whitespace, the trailing whitespace and the number of tabs must be
+/// identical. Only called when both texts have the same number of lines.
+fn line_whitespace_changed(original: &str, result: &str) -> bool {
+    fn shape(line: &str) -> (&str, &str, usize) {
+        let leading = &line[..line.len() - line.trim_start().len()];
+        let trailing = &line[line.trim_end().len()..];
+        (leading, trailing, line.matches('\t').count())
+    }
+    original
+        .lines()
+        .zip(result.lines())
+        .any(|(before, after)| shape(before) != shape(after))
 }
 
 /// Phrases a model uses to introduce its answer, matched against the lowercased first line.
@@ -1636,6 +1656,25 @@ mod tests {
     fn fixes_count_change_hunks() {
         assert_eq!(report("a b c", "x b y").fixes, 2);
         assert_eq!(report(COMMA_ORIGINAL, COMMA_FIXED).fixes, 1);
+    }
+
+    #[test]
+    fn line_whitespace_changes_are_refused() {
+        let code = "def f():\n    return 1\n    # done";
+        // Re-indented from 4 to 2 spaces.
+        let report = check(code, "def f():\n  return 1\n  # done", true);
+        assert_eq!(report.issues, vec![GuardIssue::Whitespace]);
+        assert_eq!(report.reason_code(), Some("guard_whitespace"));
+        // A Markdown hard line break (two trailing spaces) removed.
+        let report = check("first line  \nsecond line", "first line\nsecond line", true);
+        assert_eq!(report.issues, vec![GuardIssue::Whitespace]);
+        // A tab-separated column turned into a space.
+        let report = check("name\tvalue\nalpha\t1", "name value\nalpha\t1", true);
+        assert_eq!(report.issues, vec![GuardIssue::Whitespace]);
+        // A double space inside a line may be fixed.
+        assert!(check("one  two\n  three", "one two\n  three", true).passed());
+        // CRLF input is compared line by line like LF.
+        assert!(check("a\r\n  b", "A\n  b", true).passed());
     }
 
     #[test]

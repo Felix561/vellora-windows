@@ -286,7 +286,10 @@ pub fn engine_error_label(error: &TextError) -> String {
 /// Short chip text after a replacement; the ring already shows the check mark.
 fn fixes_label(fixes: usize) -> String {
     match fixes {
-        0 | 1 => "1 fix".to_string(),
+        // Only spacing inside a line changed (e.g. a double space); the guard keeps
+        // indentation, trailing spaces and tabs unchanged.
+        0 => "Spacing fixed".to_string(),
+        1 => "1 fix".to_string(),
         n => format!("{n} fixes"),
     }
 }
@@ -811,6 +814,13 @@ mod tests {
             recorder.runs.lock().unwrap()[0].result_text.as_deref(),
             Some("I think it's fine.")
         );
+    }
+
+    #[test]
+    fn fix_labels_never_claim_a_fix_for_spacing_only_changes() {
+        assert_eq!(fixes_label(0), "Spacing fixed");
+        assert_eq!(fixes_label(1), "1 fix");
+        assert_eq!(fixes_label(3), "3 fixes");
     }
 
     #[tokio::test]
