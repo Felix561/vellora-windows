@@ -24,6 +24,42 @@ Changes from the original design: no selection outline (ring + short label only,
 Quick Polish default `gpt-5.6-luna` (benchmark); Codex bridge uses `codex exec` only (app-server is
 experimental).
 
+### Owner feedback round (November 18, 2026)
+
+After the owner's own tests:
+
+- **Rewrite panel is setup-first and movable.** Hold Shift+Win opens the panel without sending
+  anything: pick the preset (1-5), the model (chips or Tab) or the ensemble (E, profiles 1-9),
+  then tap Shift+Win (or Start) to run. While the panel is open, Shift+Win taps and holds go to
+  the panel (`text-assist-panel-chord`), never to Quick Polish. Changing the preset, model or
+  ensemble after a result does not run anything; a tap during a run does nothing. The header
+  drags the window (`assist-panel` capability, `core:window:allow-start-dragging`); only a new
+  session repositions it. "Large change" and "Length changed a lot" warnings apply to Polish only.
+- **Input during a request no longer forfeits the paste.** Quick Polish waits until keyboard and
+  mouse are idle (300 ms, at most 2.5 s), re-copies the selection and pastes only if it equals
+  the original exactly; typing over the selection still keeps the result (seen in T3 Code).
+- **Clipboard safety.** The clipboard is restored after the target processed the paste (two
+  `WM_NULL` round trips, at least 1.2 s in Office apps); late copies by the target are undone;
+  snapshots include EMF and store CF_DIB only without CF_DIBV5; an incomplete snapshot refuses
+  the run (`clipboard_unsupported`).
+- **Failures are recorded without text** (outcome `failed`, empty original, reason and app), for
+  Quick Polish and panel opens. Terminals are refused (`terminal`); targets running as
+  administrator are reported (`elevated_app`).
+- **Guard:** per-line leading/trailing whitespace and tabs must be unchanged
+  (`guard_whitespace`); spacing-only fixes inside a line are labelled "Spacing fixed".
+- **Requests** add a reasoning allowance to the output cap per effort (0 for none, up to 32k).
+- **Dashboard** shows dictation and Text Assist together (`get_usage_overview`: periods
+  today/7/30/all, 30-day series, outcomes, apply rate, speed, per model/app/preset, failure
+  reasons; time saved = 1 min per 40 dictated words + 6 s per corrected word).
+- **Settings:** one model + effort picker (efforts per model, default effort on change) for
+  Quick Polish, the panel models and ensemble members, all in AI Models > Text models;
+  Settings > Text Assist shows a summary with a link there.
+
+Live checks on November 18 (synthetic text): scroll during the request -> pasted; typing ->
+kept; Edge contenteditable and textarea -> pasted; Word single paragraph -> pasted (later Word
+attempts were blocked by Word's own sign-in prompt in this unlicensed install). The setup-first
+panel, dashboard and settings changes are covered by automated tests; the owner tests them live.
+
 ## 1. Summary
 
 Select text in any Windows editor and tap **Shift+Win**: Vellora sends the selection
