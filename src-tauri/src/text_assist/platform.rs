@@ -25,6 +25,11 @@ use crate::{
 const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(400);
 /// M1: VS Code and TeXstudio read the clipboard asynchronously; 25 ms sufficed, keep a floor.
 const MIN_RESTORE_DELAY: Duration = Duration::from_millis(50);
+/// After input during a request, the keyboard and mouse must be idle this long before the
+/// selection is re-copied (no key or button held, activity counter unchanged).
+const QUIET_PERIOD: Duration = Duration::from_millis(300);
+/// Give up waiting for idle input after this long; the result is kept instead.
+const QUIET_TIMEOUT: Duration = Duration::from_millis(2_500);
 
 /// Everything recorded when the chord fired (spec 4.1).
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +73,71 @@ fn exe_name(pid: u32) -> Option<String> {
             .next()
             .filter(|name| !name.is_empty())
             .map(str::to_string)
+    }
+}
+
+/// Console and terminal hosts: Ctrl+C there may interrupt the running program, and Ctrl+V
+/// types at the prompt instead of replacing the selection.
+pub(crate) fn is_terminal(exe_name: &str) -> bool {
+    const TERMINALS: &[&str] = &[
+        "windowsterminal.exe",
+        "openconsole.exe",
+        "conhost.exe",
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "wt.exe",
+        "wezterm-gui.exe",
+        "alacritty.exe",
+        "mintty.exe",
+        "putty.exe",
+        "kitty.exe",
+        "tabby.exe",
+        "hyper.exe",
+    ];
+    TERMINALS
+        .iter()
+        .any(|terminal| exe_name.eq_ignore_ascii_case(terminal))
+}
+
+/// True when `pid` runs elevated (as administrator) and Vellora does not. Windows then drops
+/// Vellora's injected Ctrl+C/Ctrl+V (UIPI) without reporting an error. A token that cannot be
+/// opened from a non-elevated process is treated as elevated.
+fn target_is_elevated(pid: u32) -> bool {
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    fn elevated(process: windows::Win32::Foundation::HANDLE) -> Option<bool> {
+        unsafe {
+            let mut token = windows::Win32::Foundation::HANDLE::default();
+            OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
+            let mut info = TOKEN_ELEVATION::default();
+            let mut size = 0u32;
+            let result = GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut info as *mut _ as *mut core::ffi::c_void),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut size,
+            );
+            let _ = CloseHandle(token);
+            result.ok()?;
+            Some(info.TokenIsElevated != 0)
+        }
+    }
+
+    if elevated(unsafe { GetCurrentProcess() }) == Some(true) {
+        return false;
+    }
+    unsafe {
+        let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+        let target = elevated(process);
+        let _ = CloseHandle(process);
+        target.unwrap_or(true)
     }
 }
 
@@ -150,6 +220,10 @@ impl JobPlatform for WindowsPlatform {
         if let Some(failure) = refuse_target(hwnd, pid, &FocusInfo::default()) {
             return Err(failure);
         }
+        let exe = exe_name(pid);
+        if exe.as_deref().is_some_and(is_terminal) {
+            return Err(Failure::new("terminal", "Not in terminals"));
+        }
         let (anchor, focus) = geometry::inspect_target(hwnd);
         if let Some(failure) = refuse_target(hwnd, pid, &focus) {
             return Err(failure);
@@ -157,7 +231,7 @@ impl JobPlatform for WindowsPlatform {
         Ok(TargetSnapshot {
             hwnd,
             pid,
-            exe_name: exe_name(pid),
+            exe_name: exe,
             focus,
             activity,
             anchor,
@@ -178,6 +252,9 @@ impl JobPlatform for WindowsPlatform {
         clip::send_copy().map_err(|_| Failure::new("input_blocked", "Copy blocked"))?;
         let Some(settled) = clip::wait_for_copy(before, CopyWait::default()) else {
             // Nothing was copied, so the clipboard is untouched.
+            if target_is_elevated(target.pid) {
+                return Err(Failure::new("elevated_app", "App runs as admin"));
+            }
             return Err(Failure::new("no_selection", "Select text first"));
         };
         let copied = clip::read_copied_selection();
@@ -192,6 +269,7 @@ impl JobPlatform for WindowsPlatform {
     fn replace(
         &self,
         target: &TargetSnapshot,
+        original: &str,
         text: &str,
         restore_delay: Duration,
     ) -> Result<(), Failure> {
@@ -200,7 +278,15 @@ impl JobPlatform for WindowsPlatform {
         }
         let _input = input_lock::blocking_lock();
         let focus = geometry::focus_info(target.hwnd);
-        verify_unchanged(target, foreground().0, input_activity::current(), &focus)?;
+        match verify_unchanged(target, foreground().0, input_activity::current(), &focus) {
+            Ok(()) => {}
+            // Input during the request (a scroll, a stray modifier, a click, or typing). It may
+            // not have touched the selection, so check the selection itself once input is idle.
+            Err(failure) if failure.code == "user_activity" => {
+                confirm_selection_after_input(target, original)?
+            }
+            Err(failure) => return Err(failure),
+        }
         let saved = clip::ClipboardSnapshot::capture()
             .map_err(|_| Failure::new("clipboard_busy", "The clipboard is busy"))?;
         let written = clip::write_text_excluded(text)
@@ -266,6 +352,102 @@ pub(crate) fn recopy_matches(copied: Option<&str>, original: &str) -> Result<(),
     }
 }
 
+/// [`recopy_matches`] plus the VS Code marker: with an empty selection VS Code copies the whole
+/// line, which must never count as the original selection.
+pub(crate) fn recopy_verdict(
+    copied: &clip::CopiedSelection,
+    original: &str,
+) -> Result<(), Failure> {
+    match copied.vscode {
+        VsCodeCopy::EmptySelection => Err(Failure::new("selection_lost", "Selection lost")),
+        VsCodeCopy::MultiCursor => Err(Failure::new("selection_changed", "Selection changed")),
+        VsCodeCopy::Unknown | VsCodeCopy::Selection => {
+            recopy_matches(copied.text.as_deref(), original)
+        }
+    }
+}
+
+/// True while any key or mouse button is physically down (as Windows reports it now).
+fn any_input_held() -> bool {
+    (0x01u16..=0xFE)
+        // VK_PACKET carries injected Unicode characters and is never "held".
+        .filter(|vk| *vk != 0xE7)
+        .any(|vk| unsafe { GetAsyncKeyState(vk as i32) } < 0)
+}
+
+/// Waits until no key or button is held and the activity counter stayed unchanged for
+/// `quiet`. Returns the counter value at that point, or `None` after `timeout`.
+pub(crate) fn wait_for_idle_input_with(
+    quiet: Duration,
+    timeout: Duration,
+    mut activity: impl FnMut() -> u64,
+    mut held: impl FnMut() -> bool,
+    mut now: impl FnMut() -> std::time::Instant,
+    mut sleep: impl FnMut(Duration),
+) -> Option<u64> {
+    let started = now();
+    let mut last = activity();
+    let mut quiet_since = started;
+    loop {
+        let at = now();
+        let current = activity();
+        if current != last || held() {
+            last = current;
+            quiet_since = at;
+        } else if at.duration_since(quiet_since) >= quiet {
+            return Some(current);
+        }
+        if at.duration_since(started) >= timeout {
+            return None;
+        }
+        sleep(Duration::from_millis(20));
+    }
+}
+
+/// After input during the request: once input is idle, the window and focused control must be
+/// the same and a fresh copy of the selection must equal the original exactly. Otherwise the
+/// result is kept and nothing is pasted. The clipboard is restored after the check.
+fn confirm_selection_after_input(target: &TargetSnapshot, original: &str) -> Result<(), Failure> {
+    let refused = || Failure::new("user_activity", "Input during the request");
+    let Some(quiet) = wait_for_idle_input_with(
+        QUIET_PERIOD,
+        QUIET_TIMEOUT,
+        input_activity::current,
+        any_input_held,
+        std::time::Instant::now,
+        std::thread::sleep,
+    ) else {
+        return Err(refused());
+    };
+    let focus = geometry::focus_info(target.hwnd);
+    let settled_target = TargetSnapshot {
+        activity: quiet,
+        ..target.clone()
+    };
+    verify_unchanged(&settled_target, foreground().0, quiet, &focus)?;
+    let saved = clip::ClipboardSnapshot::capture()
+        .map_err(|_| Failure::new("clipboard_busy", "The clipboard is busy"))?;
+    let before = clip::sequence();
+    clip::send_copy().map_err(|_| Failure::new("input_blocked", "Copy blocked"))?;
+    let Some(settled) = clip::wait_for_copy(before, CopyWait::default()) else {
+        // Nothing was copied: the selection is gone. The clipboard is untouched.
+        return Err(Failure::new("selection_lost", "Selection lost"));
+    };
+    let verdict = match clip::read_copied_selection() {
+        Ok(copied) => recopy_verdict(&copied, original),
+        Err(_) => Err(Failure::new("clipboard_busy", "The clipboard is busy")),
+    };
+    if clip::sequence() == settled {
+        let _ = saved.restore();
+    }
+    verdict?;
+    // Input during the re-copy itself could have changed the selection again.
+    if input_activity::current() != quiet {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 impl WindowsPlatform {
     /// Rewrite panel Apply (spec 4.3): focus hand-back, re-copy check, then paste. Any failure
     /// leaves the editor untouched; the caller keeps the result.
@@ -304,7 +486,7 @@ impl WindowsPlatform {
         };
         let copied = clip::read_copied_selection();
         let verdict = match &copied {
-            Ok(copied) => recopy_matches(copied.text.as_deref(), original),
+            Ok(copied) => recopy_verdict(copied, original),
             Err(_) => Err(Failure::new("clipboard_busy", "Clipboard busy")),
         };
         if let Err(failure) = verdict {
@@ -425,6 +607,87 @@ mod tests {
             recopy_matches(None, "a").unwrap_err().code,
             "selection_lost"
         );
+    }
+
+    #[test]
+    fn terminals_are_recognized_case_insensitively() {
+        assert!(is_terminal("WindowsTerminal.exe"));
+        assert!(is_terminal("pwsh.exe"));
+        assert!(is_terminal("CMD.EXE"));
+        assert!(!is_terminal("Code.exe"));
+        assert!(!is_terminal("T3 Code (Beta).exe"));
+        assert!(!is_terminal("notepad.exe"));
+    }
+
+    #[test]
+    fn this_process_is_not_an_elevated_target() {
+        assert!(!target_is_elevated(std::process::id()));
+    }
+
+    #[test]
+    fn recopy_verdict_rejects_vscode_line_copies() {
+        let copied = |text: &str, vscode| clip::CopiedSelection {
+            text: Some(text.to_string()),
+            vscode,
+        };
+        assert!(recopy_verdict(&copied("a b", VsCodeCopy::Selection), "a b").is_ok());
+        assert!(recopy_verdict(&copied("a b", VsCodeCopy::Unknown), "a b").is_ok());
+        // An empty VS Code selection copies the whole line, even when it equals the original.
+        assert_eq!(
+            recopy_verdict(&copied("a b", VsCodeCopy::EmptySelection), "a b")
+                .unwrap_err()
+                .code,
+            "selection_lost"
+        );
+        assert_eq!(
+            recopy_verdict(&copied("a b", VsCodeCopy::MultiCursor), "a b")
+                .unwrap_err()
+                .code,
+            "selection_changed"
+        );
+    }
+
+    /// Simulated clock for [`wait_for_idle_input_with`]: each sleep advances it.
+    fn idle_wait(
+        activity_at: impl Fn(u64) -> u64,
+        held_at: impl Fn(u64) -> bool,
+    ) -> (Option<u64>, u64) {
+        let start = std::time::Instant::now();
+        let elapsed = std::cell::Cell::new(0u64);
+        let result = wait_for_idle_input_with(
+            Duration::from_millis(300),
+            Duration::from_millis(2_500),
+            || activity_at(elapsed.get()),
+            || held_at(elapsed.get()),
+            || start + Duration::from_millis(elapsed.get()),
+            |step| elapsed.set(elapsed.get() + step.as_millis() as u64),
+        );
+        (result, elapsed.get())
+    }
+
+    #[test]
+    fn idle_wait_returns_once_input_is_quiet() {
+        // Already idle: returns the current counter after the quiet period.
+        let (value, ms) = idle_wait(|_| 5, |_| false);
+        assert_eq!(value, Some(5));
+        assert!((300..400).contains(&ms), "{ms}");
+        // Activity until 500 ms: the quiet period starts after the last change.
+        let (value, ms) = idle_wait(|t| if t < 500 { t / 100 } else { 9 }, |_| false);
+        assert_eq!(value, Some(9));
+        assert!((800..900).contains(&ms), "{ms}");
+        // A key held until 1 s also restarts the quiet period.
+        let (value, ms) = idle_wait(|_| 1, |t| t < 1_000);
+        assert_eq!(value, Some(1));
+        assert!((1_250..1_400).contains(&ms), "{ms}");
+    }
+
+    #[test]
+    fn idle_wait_gives_up_while_input_continues() {
+        let (value, ms) = idle_wait(|t| t / 100, |_| false);
+        assert_eq!(value, None);
+        assert!((2_500..2_600).contains(&ms), "{ms}");
+        let (value, _) = idle_wait(|_| 0, |_| true);
+        assert_eq!(value, None);
     }
 
     #[test]

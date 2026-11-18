@@ -120,11 +120,13 @@ pub trait JobPlatform: Send + Sync + 'static {
     fn snapshot(&self) -> Result<Self::Target, Failure>;
     /// Copy the selection through the clipboard round trip and restore the clipboard.
     fn capture(&self, target: &Self::Target, max_chars: usize) -> Result<String, Failure>;
-    /// Verify the target is unchanged, then paste `text` over the selection. An error means
-    /// nothing was pasted; the job ends as `Kept`.
+    /// Verify the target is unchanged, then paste `text` over the selection. `original` is the
+    /// captured selection; after input during the request the platform may re-copy and compare
+    /// it before pasting. An error means nothing was pasted; the job ends as `Kept`.
     fn replace(
         &self,
         target: &Self::Target,
+        original: &str,
         text: &str,
         restore_delay: Duration,
     ) -> Result<(), Failure>;
@@ -206,7 +208,22 @@ struct Finish<'a> {
 
 fn finish<T>(run: &Run<'_, T>, target: Option<&T>, done: Finish<'_>) -> JobResult {
     run.emit(target, done.phase, None, done.label.clone());
-    if let Some(original) = done.original {
+    #[cfg(debug_assertions)]
+    if matches!(done.phase, Phase::Failed | Phase::Kept) {
+        // Development diagnostics: reason code and app only, never text.
+        eprintln!(
+            "text-assist polish {:?}: reason={} app={}",
+            done.phase,
+            done.reason.unwrap_or("-"),
+            done.target_app.as_deref().unwrap_or("-")
+        );
+    }
+    // A failure before anything was captured still gets a row (with no text), so statistics
+    // and support can see where and why Quick Polish did not run.
+    let original = done
+        .original
+        .or_else(|| (done.phase == Phase::Failed && done.reason.is_some()).then_some(""));
+    if let Some(original) = original {
         let outcome = match done.phase {
             Phase::Done => OUTCOME_APPLIED,
             Phase::NoChange => OUTCOME_NO_CHANGE,
@@ -498,8 +515,9 @@ pub async fn run_polish<P: JobPlatform>(
         let platform = platform.clone();
         let target = target.clone();
         let text = restored.clone();
+        let original = selection.clone();
         let delay = job.restore_delay;
-        blocking(move || platform.replace(&target, &text, delay))
+        blocking(move || platform.replace(&target, &original, &text, delay))
             .await
             .and_then(|r| r)
     };
@@ -589,7 +607,7 @@ mod tests {
             }
             Ok(text)
         }
-        fn replace(&self, _: &FakeTarget, text: &str, _: Duration) -> Result<(), Failure> {
+        fn replace(&self, _: &FakeTarget, _: &str, text: &str, _: Duration) -> Result<(), Failure> {
             if let Some(failure) = &self.replace_error {
                 return Err(failure.clone());
             }
@@ -806,8 +824,14 @@ mod tests {
         assert_eq!(result.phase, Phase::Failed);
         assert_eq!(result.reason_code, Some("no_selection"));
         assert_eq!(result.label, "Select some text first");
-        // Nothing was captured, so there is no history row to write.
-        assert!(recorder.runs.lock().unwrap().is_empty());
+        // Nothing was captured: the row records the failure but holds no text.
+        let runs = recorder.runs.lock().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, OUTCOME_FAILED);
+        assert_eq!(runs[0].reason_code.as_deref(), Some("no_selection"));
+        assert_eq!(runs[0].original_text, "");
+        assert_eq!(runs[0].result_text, None);
+        assert_eq!(runs[0].target_app.as_deref(), Some("notepad.exe"));
     }
 
     #[tokio::test]
@@ -819,9 +843,19 @@ mod tests {
             )),
             ..FakePlatform::with_selection("x")
         };
-        let (result, _, _) = run(platform, FixedEngine::text("X"), CancelToken::new()).await;
+        let (result, _, recorder) = run(platform, FixedEngine::text("X"), CancelToken::new()).await;
         assert_eq!(result.phase, Phase::Failed);
         assert_eq!(result.reason_code, Some("password_field"));
+        // No target was taken, so the text-free row has no app either.
+        let runs = recorder.runs.lock().unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            (
+                runs[0].original_text.as_str(),
+                runs[0].target_app.as_deref()
+            ),
+            ("", None)
+        );
     }
 
     #[tokio::test]
