@@ -76,9 +76,10 @@ impl Phase {
     }
 }
 
-/// Current phase of a running job, shared with the chord worker.
+/// Current phase of a running job, shared with the chord worker. The lock makes "a tap
+/// cancels unless pasting" one decision: a tap and the switch to `Replacing` cannot interleave.
 #[derive(Debug, Default)]
-pub struct PhaseCell(AtomicU8);
+pub struct PhaseCell(AtomicU8, Mutex<()>);
 
 impl PhaseCell {
     pub fn get(&self) -> Option<Phase> {
@@ -93,6 +94,26 @@ impl PhaseCell {
     pub fn cancellable(&self) -> bool {
         self.get()
             .is_none_or(|phase| !phase.is_final() && phase != Phase::Replacing)
+    }
+
+    /// Cancels the job if it is still cancellable; returns whether it did.
+    pub fn try_cancel(&self, cancel: &CancelToken) -> bool {
+        let _decision = self.1.lock().unwrap();
+        let cancellable = self.cancellable();
+        if cancellable {
+            cancel.cancel();
+        }
+        cancellable
+    }
+
+    /// Switches to `Replacing` unless a cancel already arrived; returns whether it did.
+    fn enter_replacing(&self, cancel: &CancelToken) -> bool {
+        let _decision = self.1.lock().unwrap();
+        if cancel.is_cancelled() {
+            return false;
+        }
+        self.set(Phase::Replacing);
+        true
     }
 }
 
@@ -507,7 +528,11 @@ pub async fn run_polish<P: JobPlatform>(
         return cancelled(&run, usage, first_token_ms);
     }
 
-    // 5. Verify and replace. From here a chord no longer cancels.
+    // 5. Verify and replace. From here a chord no longer cancels; a tap that arrived until
+    // now cancels the job instead of being swallowed.
+    if !run.phase.enter_replacing(&cancel) {
+        return cancelled(&run, usage, first_token_ms);
+    }
     run.emit(
         Some(&target),
         Phase::Replacing,
@@ -814,6 +839,24 @@ mod tests {
             recorder.runs.lock().unwrap()[0].result_text.as_deref(),
             Some("I think it's fine.")
         );
+    }
+
+    #[test]
+    fn a_tap_either_cancels_or_comes_after_replacing_began() {
+        let cell = PhaseCell::default();
+        let cancel = CancelToken::new();
+        cell.set(Phase::Checking);
+        // A tap while checking cancels, and the job then does not start replacing.
+        assert!(cell.try_cancel(&cancel));
+        assert!(!cell.enter_replacing(&cancel));
+        // Without a tap the job enters Replacing, and a later tap no longer cancels.
+        let cell = PhaseCell::default();
+        let cancel = CancelToken::new();
+        cell.set(Phase::Checking);
+        assert!(cell.enter_replacing(&cancel));
+        assert_eq!(cell.get(), Some(Phase::Replacing));
+        assert!(!cell.try_cancel(&cancel));
+        assert!(!cancel.is_cancelled());
     }
 
     #[test]
