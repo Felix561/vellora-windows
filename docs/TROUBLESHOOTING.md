@@ -76,15 +76,18 @@ Text Assist is on the local feature branch only. The ring label tells what happe
 
 | Label | Meaning and fix |
 | --- | --- |
-| Select text first | Nothing was copied. Select text first. Elevated (administrator) apps and some fields block simulated copy. In VS Code, an empty selection copies the whole line; Vellora refuses that. |
-| Saved in Vellora | The window, focus or selection changed, or you typed or clicked while the model worked, so Vellora did not paste. Open **History > Text Assist** and copy the result. |
-| Review in Vellora | The result looked wrong (changed LaTeX/Markdown/code, too many changes, incomplete). It is in History for review. |
+| Select text first | Nothing was copied. Select text first. Some fields block simulated copy, and an app's own dialog (for example Word's sign-in prompt) can hold the keyboard. In VS Code, an empty selection copies the whole line; Vellora refuses that. History lists these attempts as "Nothing was captured" with the app. |
+| App runs as admin | The app runs as administrator and Windows drops simulated keys for it. Run the app normally, or run Vellora as administrator too. |
+| Not in terminals | Terminals are skipped: Ctrl+C can stop the running program there and Ctrl+V types at the prompt instead of replacing the selection. |
+| Clipboard too large | Your clipboard holds more than Vellora can save and restore (over 64 MB). Copy something smaller first; your clipboard was not touched. |
+| Saved in Vellora | The window, focus or selection changed while the model worked, so Vellora did not paste. Scrolling or a stray key press is fine: Vellora waits until input is idle, copies the selection again and pastes only if it is unchanged. Open **History > Text Assist** and copy the result. |
+| Review in Vellora | The result looked wrong (changed LaTeX/Markdown/code, indentation or line breaks, too many changes, incomplete). It is in History for review. |
 | Release keys | Shift, Ctrl, Alt or Win were still held when Vellora needed to copy or paste. Release them and try again. |
 | Clipboard busy / Copy blocked | Another app held the clipboard, or Windows blocked simulated input. Try again; avoid elevated destination apps. |
 | Add API key / Key rejected / Rate limited / Offline / Timed out | Check **Models > Text models** and your provider account. |
 | One cursor only | VS Code had several cursors; use one selection. |
 
-If the wrong text lands in apps that read the clipboard late, raise **Settings > Text Assist > Paste restore delay** (default 400 ms). Shift+Win does not open the Start menu. Security software may watch apps that use keyboard hooks, simulated input and the clipboard; if it blocks Vellora, check its notification history.
+Before restoring your clipboard after a paste, Vellora waits until the app has processed the paste, and at least 1.2 s in Office apps. If the wrong text still lands in an app that reads the clipboard late, raise **Settings > Text Assist > Paste restore delay** (default 400 ms). Shift+Win does not open the Start menu. Security software may watch apps that use keyboard hooks, simulated input and the clipboard; if it blocks Vellora, check its notification history.
 
 ## Send a useful bug report
 

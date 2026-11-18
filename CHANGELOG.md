@@ -12,6 +12,17 @@ Vellora is a Windows-only early beta. Entries describe private review versions; 
 - A progress ring with a short label floats above all windows at the selection (no outline, owner decision after the first live test).
 - History, Dashboard and Settings sections for Text Assist; "Text models" tab for keys, endpoints, favorites, colors and ensemble profiles.
 
+### Fixed (feature branch, November 18, after the owner's first own tests)
+
+- Quick Polish no longer gives up when you scroll or press a stray key while the model works (seen in T3 Code): it waits until input is idle, copies the selection again and pastes only if it is unchanged. Typing over the selection still keeps the result.
+- The clipboard is restored only after the target app has processed the paste (at least 1.2 s in Office apps); a busy Word could otherwise paste the previous clipboard. A copy that arrives late is undone too.
+- Clipboard snapshots keep vector pictures (EMF) and store large images once; a clipboard that cannot be saved completely is left untouched.
+- Failed attempts are recorded (app and reason, no text). Terminals are skipped, and apps running as administrator are reported instead of "Select text first".
+- Results that only change indentation, trailing spaces or tabs are no longer pasted; spacing-only fixes inside a line are labelled "Spacing fixed".
+- Requests leave room for reasoning tokens, so models at higher effort no longer return empty or cut-off results.
+- The halo uses the target monitor's scale on mixed-DPI setups. A tap just before pasting now cancels reliably.
+- Settings too large to load are not saved; an unreadable Text Assist block resets only Text Assist.
+
 ### Changed
 
 - Dictation cleanup now defaults to `gpt-6-luna`, OpenAI's documented replacement for `gpt-5-nano` (shutdown December 11, 2026). Cleanup requests to Luna models ask for reasoning effort `none`.
