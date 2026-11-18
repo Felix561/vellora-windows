@@ -109,12 +109,16 @@ export function clampProgress(value: unknown): number | null {
   return Math.min(1, Math.max(0, value));
 }
 
-/** Physical-to-CSS ratio: devicePixelRatio when usable, else the backend scale, else 1. */
+/**
+ * Physical-to-CSS ratio: the backend scale of the target monitor when usable, else
+ * devicePixelRatio, else 1. The backend moves the halo onto the target monitor right before it
+ * sends the payload, so devicePixelRatio may still describe the previous monitor then.
+ */
 export function resolvePixelRatio(devicePixelRatio: unknown, scale: unknown): number {
+  if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) return scale;
   if (typeof devicePixelRatio === "number" && Number.isFinite(devicePixelRatio) && devicePixelRatio > 0) {
     return devicePixelRatio;
   }
-  if (typeof scale === "number" && Number.isFinite(scale) && scale > 0) return scale;
   return 1;
 }
 

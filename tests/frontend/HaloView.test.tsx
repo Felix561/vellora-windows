@@ -104,10 +104,13 @@ describe("halo helpers", () => {
     expect(clampProgress("0.5")).toBeNull();
   });
 
-  it("converts physical to CSS px with devicePixelRatio, falling back to the backend scale", () => {
-    expect(resolvePixelRatio(2, 1.25)).toBe(2);
+  it("converts physical to CSS px with the target monitor's scale, falling back to devicePixelRatio", () => {
+    // devicePixelRatio may still be the previous monitor's right after the window moved.
+    expect(resolvePixelRatio(2, 1.25)).toBe(1.25);
     expect(resolvePixelRatio(0, 1.25)).toBe(1.25);
     expect(resolvePixelRatio(undefined, 1.25)).toBe(1.25);
+    expect(resolvePixelRatio(1.5, 0)).toBe(1.5);
+    expect(resolvePixelRatio(1.5, undefined)).toBe(1.5);
     expect(resolvePixelRatio(undefined, 0)).toBe(1);
     const layout = normalizeHaloPayload(payload(), 1.5);
     expect(layout.box).toEqual({ x: 100, y: 200, width: 400, height: 60 });
@@ -126,12 +129,12 @@ describe("halo helpers", () => {
   });
 
   it("falls back to point mode without a usable box and derives the anchor from a box", () => {
-    const noBox = normalizeHaloPayload(payload({ box: null }), 1);
+    const noBox = normalizeHaloPayload(payload({ box: null, scale: 1 }), 1);
     expect(noBox.mode).toBe("point");
     expect(noBox.box).toBeNull();
-    const derived = normalizeHaloPayload({ ...payload(), point: undefined }, 1);
+    const derived = normalizeHaloPayload({ ...payload({ scale: 1 }), point: undefined }, 1);
     expect(derived.point).toEqual({ x: 750, y: 300 });
-    expect(normalizeHaloPayload({ ...payload(), box: null, point: undefined }, 1).phase).toBe("hidden");
+    expect(normalizeHaloPayload({ ...payload({ scale: 1 }), box: null, point: undefined }, 1).phase).toBe("hidden");
   });
 
   it("describes ring, chip and fade per phase", () => {
