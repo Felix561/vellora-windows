@@ -1,36 +1,26 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
+import { KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { deleteTextProviderKey, saveTextProviderKey } from "../lib/api";
 import { CliBridgesSection } from "./CliBridgesSection";
-import { EnsembleProfilesSection, ModelOptions } from "./EnsembleProfilesSection";
+import { EnsembleProfilesSection, ModelEffortPicker, ModelRefList, type PickerContext } from "./EnsembleProfilesSection";
 import {
   MAX_ENDPOINTS,
   MAX_FAVORITES,
-  addFavorite,
   colorKey,
   defaultModelColor,
-  effortForModel,
-  effortLabel,
   endpointIdFromName,
   endpointsPatch,
   favoriteName,
   findCatalogModel,
+  isCliProvider,
   isHexColor,
   isLocalBaseUrl,
+  modelAccess,
   modelColorFor,
-  modelOptionValue,
-  modelRef,
   modelRefLabel,
-  moveFavorite,
-  needsBridge,
-  needsKey,
-  parseModelOptionValue,
-  planBillingLabel,
   providerLabel,
   pruneModelColors,
-  removeFavorite,
   resetModelColor,
-  setFavoriteEffort,
   setModelColor,
   useTextAssistOverview,
   useTextProviderKeys,
@@ -41,7 +31,6 @@ import {
 import type {
   AppSettings,
   CompatEndpoint,
-  Effort,
   KeyedTextProvider,
   ModelRef,
   SettingsChange,
@@ -49,13 +38,14 @@ import type {
   TextModelInfo,
   TextProviderKeys,
 } from "../lib/types";
+import "./text-models.css";
 
 type Props = {
   settings: AppSettings;
   onSettingsChange: SettingsChange;
 };
 
-type Section = "bridges" | "endpoints" | "favorites" | "profiles" | "colors";
+type Section = "quick" | "bridges" | "endpoints" | "favorites" | "profiles" | "colors";
 type Feedback = { text: string; error: boolean };
 type SectionFeedback = Feedback & { section: Section };
 type Save = (section: Section, patch: Partial<TextAssistSettings>, success: string) => Promise<boolean>;
@@ -66,15 +56,23 @@ const providerPrivacy: Record<"openai" | "anthropic" | "gemini", string> = {
   gemini: "Free tier: Google may use the text you send to improve its products. Paid tier (billing enabled for the key's project): it does not.",
 };
 
-/** Models -> Text models: provider keys, subscription bridges, OpenAI-compatible endpoints, favorites and colors. */
+/**
+ * Models -> Text models. "Text Assist models" (Quick Polish, Rewrite panel models, ensemble profiles)
+ * comes first; provider keys and subscription bridges sit in a collapsible "Providers & keys" area,
+ * and endpoints and model colors under "Advanced".
+ */
 export function TextModelsView({ settings, onSettingsChange }: Props) {
   const assist = settings.textAssist;
+  const ids = useId();
   const { overview, error: modelsError } = useTextAssistOverview();
   const endpointIds = useMemo(() => assist.openaiCompatible.map((endpoint) => endpoint.id), [assist.openaiCompatible]);
   const { keys, error: keysError, reload: reloadKeys } = useTextProviderKeys(endpointIds);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<SectionFeedback | null>(null);
-  const catalog = overview?.models ?? [];
+  const [providersOpen, setProvidersOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const providersSummary = useRef<HTMLElement>(null);
+  const catalog = useMemo(() => overview?.models ?? [], [overview]);
   const busyRef = useRef(false);
 
   const save: Save = async (section, patch, success) => {
@@ -98,21 +96,84 @@ export function TextModelsView({ settings, onSettingsChange }: Props) {
   const report = (section: Section, text: string, error: boolean) => setFeedback({ section, text, error });
   const feedbackFor = (section: Section) => (feedback?.section === section ? feedback : null);
 
+  function showProviders() {
+    setProvidersOpen(true);
+    window.requestAnimationFrame(() => {
+      providersSummary.current?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      providersSummary.current?.focus();
+    });
+  }
+
+  const context: PickerContext = {
+    catalog,
+    endpoints: assist.openaiCompatible,
+    keys,
+    cli: assist.cli,
+    loading: !overview && !modelsError,
+    onShowProviders: showProviders,
+  };
+  const needsSetup = usedModelsNeedSetup(assist, keys);
+
   return (
     <div className="settings-stack ta-models">
       {modelsError && <p className="error-text" role="alert">Could not load the model list: {modelsError}</p>}
       {keysError && <p className="error-text" role="alert">Could not read which keys are saved: {keysError}</p>}
-      <ProviderKeys keys={keys} onChanged={() => void reloadKeys()} />
-      <CliBridgesSection assist={assist} busy={busy} save={(patch, success) => save("bridges", patch, success)} feedback={feedbackFor("bridges")} />
-      <Endpoints assist={assist} keys={keys} busy={busy} save={save} report={report}
-        feedback={feedbackFor("endpoints")} onKeysChanged={() => void reloadKeys()} />
-      <Favorites assist={assist} catalog={catalog} loading={!overview && !modelsError} keys={keys} busy={busy}
-        save={save} report={report} feedback={feedbackFor("favorites")} />
-      <EnsembleProfilesSection assist={assist} catalog={catalog} loading={!overview && !modelsError} keys={keys} busy={busy}
-        save={(patch, success) => save("profiles", patch, success)} feedback={feedbackFor("profiles")} />
-      <ModelColors assist={assist} catalog={catalog} busy={busy} save={save} report={report} feedback={feedbackFor("colors")} />
+
+      <section className="ta-area" aria-labelledby={`${ids}-models`}>
+        <header className="ta-area-head">
+          <h2 id={`${ids}-models`} className="ta-area-title">Text Assist models</h2>
+          <p className="hint">Choose the model and effort for each part of Text Assist. Prices are provider list prices per million tokens; "plan" models run on your subscription.</p>
+        </header>
+        <QuickPolishPanel assist={assist} context={context} busy={busy} save={save} feedback={feedbackFor("quick")} />
+        <RewriteModels assist={assist} context={context} busy={busy} save={save} report={report} feedback={feedbackFor("favorites")} />
+        <EnsembleProfilesSection assist={assist} context={context} busy={busy}
+          save={(patch, success) => save("profiles", patch, success)} feedback={feedbackFor("profiles")} />
+      </section>
+
+      <details className="ta-area ta-area-secondary" open={providersOpen}
+        onToggle={(event) => setProvidersOpen(event.currentTarget.open)}>
+        <summary ref={providersSummary} className="ta-area-summary">
+          <span className="ta-area-title">Providers &amp; keys</span>
+          <span className={`ta-area-meta${needsSetup ? " warning-text" : ""}`}>
+            {needsSetup ? "A model you use needs a key or a bridge · " : ""}{providersStatus(keys, assist)}
+          </span>
+        </summary>
+        <div className="ta-area-body">
+          <ProviderKeys keys={keys} onChanged={() => void reloadKeys()} />
+          <CliBridgesSection assist={assist} busy={busy} save={(patch, success) => save("bridges", patch, success)} feedback={feedbackFor("bridges")} />
+        </div>
+      </details>
+
+      <details className="ta-area ta-area-secondary" open={advancedOpen}
+        onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+        <summary className="ta-area-summary">
+          <span className="ta-area-title">Advanced</span>
+          <span className="ta-area-meta">OpenAI-compatible endpoints ({assist.openaiCompatible.length}) and model colors</span>
+        </summary>
+        <div className="ta-area-body">
+          <Endpoints assist={assist} keys={keys} busy={busy} save={save} report={report}
+            feedback={feedbackFor("endpoints")} onKeysChanged={() => void reloadKeys()} />
+          <ModelColors assist={assist} catalog={catalog} busy={busy} save={save} report={report} feedback={feedbackFor("colors")} />
+        </div>
+      </details>
     </div>
   );
+}
+
+/** "OpenAI key saved · Anthropic no key · Google Gemini no key · subscription bridges off" */
+function providersStatus(keys: TextProviderKeys | null, assist: TextAssistSettings) {
+  const plans = [assist.cli.codex.enabled ? "ChatGPT plan" : null, assist.cli.claude.enabled ? "Claude plan" : null].filter(Boolean);
+  const bridges = plans.length > 0 ? `${plans.join(" and ")} on` : "subscription bridges off";
+  if (!keys) return bridges;
+  const status = (["openai", "anthropic", "gemini"] as const)
+    .map((provider) => `${providerLabel(provider)} ${keys[provider] ? "key saved" : "no key"}`);
+  return [...status, bridges].join(" · ");
+}
+
+/** Whether any model Text Assist uses cannot run as configured (flagged on the Providers & keys summary). */
+function usedModelsNeedSetup(assist: TextAssistSettings, keys: TextProviderKeys | null) {
+  const refs = [assist.quickModel, ...assist.favoriteModels, ...assist.ensembleProfiles.flatMap((profile) => profile.members)];
+  return refs.some((ref) => modelAccess(ref, keys, assist.cli) !== "ok");
 }
 
 function FeedbackText({ feedback }: { feedback: Feedback | null }) {
@@ -278,7 +339,7 @@ function Endpoints({ assist, keys, busy, save, report, feedback, onKeysChanged }
     const patch = endpointsPatch(assist, next);
     const dropped = assist.favoriteModels.length - patch.favoriteModels.length;
     const droppedProfiles = assist.ensembleProfiles.length - patch.ensembleProfiles.length;
-    const note = (dropped > 0 ? ` ${dropped} favorite${dropped === 1 ? "" : "s"} for removed models ${dropped === 1 ? "was" : "were"} removed.` : "")
+    const note = (dropped > 0 ? ` ${dropped} Rewrite panel model${dropped === 1 ? "" : "s"} that the endpoint no longer lists ${dropped === 1 ? "was" : "were"} removed.` : "")
       + (droppedProfiles > 0 ? ` ${droppedProfiles} ensemble profile${droppedProfiles === 1 ? "" : "s"} without models ${droppedProfiles === 1 ? "was" : "were"} removed.` : "");
     const ok = await save("endpoints", patch, `${endpoint.name} ${editingId ? "updated" : "added"}.${note}`);
     if (!ok) return false;
@@ -347,7 +408,7 @@ function Endpoints({ assist, keys, busy, save, report, feedback, onKeysChanged }
                 </div>
                 {confirmRemove === endpoint.id && (
                   <div className="inline-confirmation" role="group" aria-label={`Confirm removing ${endpoint.name}`}>
-                    <span>Remove {endpoint.name}? Its saved key and its favorite models are removed too.</span>
+                    <span>Remove {endpoint.name}? Its saved key is removed too, and its models leave the Rewrite panel and ensemble profiles.</span>
                     <button type="button" className="icon-button danger-text" disabled={busy} onClick={() => void remove(endpoint)}>Remove endpoint</button>
                     <button type="button" className="icon-button" disabled={busy} onClick={() => setConfirmRemove(null)}>Cancel</button>
                   </div>
@@ -462,159 +523,59 @@ function EndpointForm({ initial, existing, busy, onSubmit, onCancel }: {
 }
 
 // ---------------------------------------------------------------------------
-// Favorites
+// Quick Polish and Rewrite panel models
 // ---------------------------------------------------------------------------
 
-function Favorites({ assist, catalog, loading, keys, busy, save, report, feedback }: SectionProps & {
-  catalog: readonly TextModelInfo[];
-  loading: boolean;
-  keys: TextProviderKeys | null;
-}) {
+type PickerSectionProps = Omit<SectionProps, "report"> & { context: PickerContext };
+
+function QuickPolishPanel({ assist, context, busy, save, feedback }: PickerSectionProps) {
   const ids = useId();
-  const favorites = assist.favoriteModels;
-  const endpoints = assist.openaiCompatible;
-  const [choice, setChoice] = useState("");
-  const [effort, setEffort] = useState<Effort | "">("");
-  const pendingFocus = useRef<{ index: number; action: "up" | "down" } | null>(null);
-  const full = favorites.length >= MAX_FAVORITES;
+  const quick = assist.quickModel;
+  const model = findCatalogModel(context.catalog, quick);
 
-  const chosen = parseModelOptionValue(choice);
-  const chosenModel = chosen && chosen.provider !== "openai_compatible" ? findCatalogModel(catalog, chosen) : null;
-  const chosenEfforts = chosenModel?.efforts ?? [];
-
-  // Keep keyboard focus on the moved favorite once the saved order arrives.
-  useEffect(() => {
-    const pending = pendingFocus.current;
-    if (!pending || busy) return;
-    pendingFocus.current = null;
-    const button = (action: string) => document.getElementById(`${ids}-fav-${pending.index}-${action}`) as HTMLButtonElement | null;
-    const target = button(pending.action);
-    (target && !target.disabled ? target : button(pending.action === "up" ? "down" : "up"))?.focus();
-  }, [favorites, busy, ids]);
-
-  function selectChoice(value: string) {
-    setChoice(value);
-    const parsed = parseModelOptionValue(value);
-    const model = parsed && parsed.provider !== "openai_compatible" ? findCatalogModel(catalog, parsed) : null;
-    setEffort(model ? (effortForModel(model, effort || null) ?? "") : "");
+  function change(ref: ModelRef) {
+    const modelColors = pruneModelColors({ ...assist, quickModel: ref });
+    void save("quick", { quickModel: ref, modelColors }, `Quick Polish now uses ${favoriteName(ref, context.catalog, context.endpoints)}.`);
   }
-
-  function add() {
-    if (!chosen) return;
-    if (chosen.provider !== "openai_compatible" && !chosenModel) return;
-    const ref = modelRef(chosen.provider, chosen.model, effort || null, chosen.endpoint);
-    const result = addFavorite(favorites, ref);
-    if (result.error !== null) { report("favorites", result.error, true); return; }
-    void save("favorites", { favoriteModels: result.favorites }, `${favoriteName(ref, catalog, endpoints)} added to favorites.`);
-  }
-
-  function move(index: number, delta: number) {
-    const next = moveFavorite(favorites, index, delta);
-    pendingFocus.current = { index: index + delta, action: delta < 0 ? "up" : "down" };
-    void save("favorites", { favoriteModels: next }, `${favoriteName(favorites[index], catalog, endpoints)} moved to position ${index + delta + 1}.`);
-  }
-
-  function remove(index: number) {
-    const ref = favorites[index];
-    const favoriteModels = removeFavorite(favorites, index);
-    const modelColors = pruneModelColors({ ...assist, favoriteModels });
-    void save("favorites", { favoriteModels, modelColors }, `${favoriteName(ref, catalog, endpoints)} removed from favorites.`);
-  }
-
-  function changeEffort(index: number, value: Effort) {
-    const ref = favorites[index];
-    const result = setFavoriteEffort(favorites, index, value, findCatalogModel(catalog, ref));
-    if (result.error !== null) { report("favorites", result.error, true); return; }
-    void save("favorites", { favoriteModels: result.favorites }, `Effort for ${modelRefLabel(ref, catalog)} set to ${effortLabel(value)}.`);
-  }
-
-  const missingKey = (provider: ModelRef["provider"]) => needsKey({ provider }, keys);
-  const bridgeOff = (provider: ModelRef["provider"]) => needsBridge({ provider }, assist.cli);
 
   return (
     <section className="panel" aria-labelledby={`${ids}-title`}>
-      <h3 id={`${ids}-title`}>Favorite models</h3>
-      <p className="hint" id={`${ids}-hint`}>
-        In the Rewrite panel, <kbd>Tab</kbd> and <kbd>Shift</kbd>+<kbd>Tab</kbd> cycle through these models in this order.
-        Add a model several times to compare efforts. Up to {MAX_FAVORITES}.
+      <h3 id={`${ids}-title`}>Quick Polish</h3>
+      <p className="hint">
+        Select text and tap <kbd>Shift</kbd>+<kbd>Win</kbd> to fix spelling, grammar and punctuation in place.
+        Recommended models are fast and inexpensive; Quick Polish rarely needs more than low effort.
       </p>
       <FeedbackText feedback={feedback} />
-      {favorites.length === 0 ? (
-        <p className="hint">No favorites yet. The Rewrite panel then uses only the Quick Polish model.</p>
-      ) : (
-        <ol className="ta-favorites" aria-label="Favorite models" aria-describedby={`${ids}-hint`}>
-          {favorites.map((ref, index) => {
-            const name = favoriteName(ref, catalog, endpoints);
-            const model = ref.provider === "openai_compatible" ? null : findCatalogModel(catalog, ref);
-            const endpoint = ref.provider === "openai_compatible" ? endpoints.find((item) => item.id === ref.endpoint) : null;
-            const efforts = model?.efforts ?? [];
-            const keyMissing = missingKey(ref.provider);
-            const plan = planBillingLabel(ref.provider);
-            return (
-              <li key={`${index}-${modelOptionValue(ref)}-${ref.effort ?? ""}`} className="ta-favorite">
-                <span className="ta-swatch" style={{ background: modelColorFor(ref, assist.modelColors, catalog) }} aria-hidden="true" />
-                <span className="ta-favorite-name">
-                  <strong>{index + 1}. {modelRefLabel(ref, catalog)}</strong>
-                  <span className="ta-favorite-meta">
-                    {ref.provider === "openai_compatible" ? `${endpoint?.name ?? ref.endpoint ?? "Unknown endpoint"} (OpenAI-compatible)` : providerLabel(ref.provider)}
-                    {plan && " · $0 marginal"}
-                    {keyMissing && <span className="warning-text ta-needs-key"> · needs key</span>}
-                    {bridgeOff(ref.provider) && <span className="warning-text ta-needs-key"> · bridge off</span>}
-                  </span>
-                </span>
-                {efforts.length > 0 ? (
-                  <select className="ta-effort" aria-label={`Effort for ${name}`} value={ref.effort ?? ""} disabled={busy}
-                    onChange={(event) => changeEffort(index, event.target.value as Effort)}>
-                    {!ref.effort && <option value="">Model default</option>}
-                    {ref.effort && !efforts.includes(ref.effort) && <option value={ref.effort}>{effortLabel(ref.effort)} (not offered)</option>}
-                    {efforts.map((item) => <option key={item} value={item}>{effortLabel(item)}</option>)}
-                  </select>
-                ) : (
-                  <span className="ta-effort ta-effort-none">{ref.provider === "openai_compatible" ? "No effort sent" : ref.effort ? effortLabel(ref.effort) : "Default effort"}</span>
-                )}
-                <span className="ta-favorite-actions">
-                  <button id={`${ids}-fav-${index}-up`} type="button" className="icon-button" disabled={busy || index === 0}
-                    aria-label={`Move ${name} up`} title="Move up" onClick={() => move(index, -1)}>
-                    <ArrowUp size={15} aria-hidden="true" />
-                  </button>
-                  <button id={`${ids}-fav-${index}-down`} type="button" className="icon-button" disabled={busy || index === favorites.length - 1}
-                    aria-label={`Move ${name} down`} title="Move down" onClick={() => move(index, 1)}>
-                    <ArrowDown size={15} aria-hidden="true" />
-                  </button>
-                  <button type="button" className="icon-button danger-text" disabled={busy}
-                    aria-label={`Remove ${name} from favorites`} title="Remove" onClick={() => remove(index)}>
-                    <Trash2 size={15} aria-hidden="true" />
-                  </button>
-                </span>
-              </li>
-            );
-          })}
-        </ol>
+      <ModelEffortPicker value={quick} context={context} recommend includeEndpoints={false} busy={busy}
+        ariaLabel="Quick Polish model" effortGroupLabel="Quick Polish effort" onChange={change} />
+      {model?.shutdown && <p className="hint ta-key-note">{model.label} retires on {model.shutdown}. Choose another model before then.</p>}
+      {isCliProvider(quick.provider) && (
+        <p className="hint ta-key-note">Plan models run through a command-line tool and take several seconds; not recommended for Quick Polish.</p>
       )}
+    </section>
+  );
+}
 
-      <form className="ta-add-favorite" aria-label="Add a favorite model" onSubmit={(event) => { event.preventDefault(); add(); }}>
-        <label className="field">
-          <span>Model</span>
-          <select value={choice} disabled={busy || full} onChange={(event) => selectChoice(event.target.value)}>
-            <option value="">{loading ? "Loading models..." : "Choose a model"}</option>
-            <ModelOptions catalog={catalog} endpoints={endpoints} keys={keys} cli={assist.cli} />
-          </select>
-        </label>
-        <label className="field">
-          <span>Effort</span>
-          <select value={effort} disabled={busy || full || chosenEfforts.length === 0} onChange={(event) => setEffort(event.target.value as Effort)}>
-            {chosenEfforts.length === 0 && <option value="">{chosen?.provider === "openai_compatible" ? "No effort sent" : "Choose a model first"}</option>}
-            {chosenEfforts.map((item) => <option key={item} value={item}>{effortLabel(item)}</option>)}
-          </select>
-        </label>
-        <button type="submit" className="icon-button" disabled={busy || full || !chosen}>
-          <Plus size={15} aria-hidden="true" /> Add favorite
-        </button>
-      </form>
-      {full && <p className="hint">You have {MAX_FAVORITES} favorites, the maximum. Remove one to add another.</p>}
-      {chosen && chosen.provider !== "openai_compatible" && missingKey(chosen.provider) && (
-        <p className="warning-text ta-key-note">{providerLabel(chosen.provider)} has no saved key yet. Add it under Provider keys before you use this model.</p>
-      )}
+function RewriteModels({ assist, context, busy, save, report, feedback }: SectionProps & { context: PickerContext }) {
+  const ids = useId();
+
+  function change(favoriteModels: ModelRef[], message: string) {
+    const modelColors = pruneModelColors({ ...assist, favoriteModels });
+    void save("favorites", { favoriteModels, modelColors }, message);
+  }
+
+  return (
+    <section className="panel" aria-labelledby={`${ids}-title`}>
+      <h3 id={`${ids}-title`}>Rewrite panel models</h3>
+      <p className="hint">
+        The Rewrite panel offers these models in this order. Add a model several times to compare efforts. Up to {MAX_FAVORITES}.
+      </p>
+      <FeedbackText feedback={feedback} />
+      <ModelRefList refs={assist.favoriteModels} max={MAX_FAVORITES} context={context} modelColors={assist.modelColors} busy={busy}
+        listLabel="Rewrite panel models" rowLabel="Rewrite panel model" removeSuffix="from the Rewrite panel"
+        emptyText="No models yet. The Rewrite panel then uses only the Quick Polish model."
+        duplicateMessage="This model and effort is already in the Rewrite panel."
+        onChange={change} onError={(message) => report("favorites", message, true)} />
     </section>
   );
 }
@@ -640,7 +601,7 @@ function colorEntries(assist: TextAssistSettings, catalog: readonly TextModelInf
     entries.set(key, { key, ref, label: modelRefLabel(ref, catalog), usage: `${provider} · ${usage}` });
   };
   addEntry(assist.quickModel, "Quick Polish");
-  for (const ref of assist.favoriteModels) addEntry(ref, "favorite");
+  for (const ref of assist.favoriteModels) addEntry(ref, "Rewrite panel");
   for (const profile of assist.ensembleProfiles) for (const ref of profile.members) addEntry(ref, "ensemble");
   return [...entries.values()];
 }

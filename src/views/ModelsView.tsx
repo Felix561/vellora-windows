@@ -10,7 +10,7 @@ type Props = {
   onSettingsChange: SettingsChange;
 };
 
-const models: Array<{
+export const models: Array<{
   id: SttModel;
   name: string;
   bestFor: string;
@@ -47,15 +47,16 @@ const models: Array<{
   },
 ];
 
-type ModelsTab = "transcription" | "text";
+export type ModelsTab = "transcription" | "text";
 
 const modelsTabs: ReadonlyArray<{ id: ModelsTab; label: string }> = [
   { id: "transcription", label: "Transcription" },
   { id: "text", label: "Text models" },
 ];
 
-export function ModelsView({ settings, onSettingsChange }: Props) {
-  const [tab, setTab] = useState<ModelsTab>("transcription");
+/** `initialTab` picks the tab shown when the view mounts, e.g. "text" when Settings links to Text Assist models. */
+export function ModelsView({ settings, onSettingsChange, initialTab = "transcription" }: Props & { initialTab?: ModelsTab }) {
+  const [tab, setTab] = useState<ModelsTab>(initialTab);
   return (
     <div className="models-page">
       <SectionTabs idPrefix="models" label="Model sections" tabs={modelsTabs} selected={tab} onSelect={setTab} />

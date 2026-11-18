@@ -1,0 +1,76 @@
+/* Text Assist model choice: the shared model + effort picker, model lists and the Text models areas.
+   Both appearances: notebook (default tokens) and classic ([data-appearance="classic"]). */
+
+/* --- Areas: "Text Assist models" first, then collapsible "Providers & keys" and "Advanced". --- */
+.ta-area { display: grid; gap: 18px; min-width: 0; }
+.ta-area-head { display: grid; gap: 4px; }
+.ta-area-head .hint { margin: 0; }
+.ta-area-title { margin: 0; font-family: var(--font-serif); font-size: 20px; font-weight: 600; color: var(--ink); }
+.ta-area-secondary { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.ta-area-secondary > .ta-area-body { display: grid; gap: 18px; padding: 0 14px 14px; }
+.ta-area-summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; padding: 12px 14px; cursor: pointer; list-style-position: inside; }
+.ta-area-summary .ta-area-title { font-size: 16px; }
+.ta-area-meta { flex: 1 1 260px; min-width: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.ta-area-meta.warning-text { color: var(--warning); }
+.ta-area-summary:focus-visible { outline: 2px solid var(--clay-dark); outline-offset: 2px; border-radius: 8px; }
+
+/* --- Model + effort picker. --- */
+.ta-picker { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; min-width: 0; }
+.ta-picker .ta-picker-model { flex: 1 1 280px; min-width: 0; margin-top: 14px; }
+.ta-picker-compact { flex: 1 1 360px; align-items: center; }
+.ta-picker-compact .ta-picker-model { margin-top: 0; }
+.ta-picker-compact .ta-picker-model select { min-height: 34px; }
+.ta-effort-field { display: grid; gap: 8px; min-width: 0; }
+.ta-picker:not(.ta-picker-compact) .ta-effort-field { margin-top: 14px; }
+.ta-effort-caption { color: var(--ink-soft); }
+.ta-effort-field .ta-effort-none { min-height: 34px; padding: 0 10px; border: 1px dashed var(--line-strong); border-radius: 8px; }
+
+.ta-segments { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--paper-raised); overflow: hidden; }
+.ta-segment { position: relative; display: inline-flex; align-items: center; min-height: 34px; padding: 0 12px; color: var(--ink-soft); font-size: 13px; cursor: pointer; user-select: none; white-space: nowrap; }
+.ta-segment + .ta-segment { border-left: 1px solid var(--line); }
+.ta-segment:hover { background: var(--paper-soft); color: var(--ink); }
+.ta-segment.checked { background: var(--clay-dark); color: #fff8ef; font-weight: 650; }
+/* The native radio stays focusable and keyboard-operable (arrow keys) but is visually replaced by its label. */
+.ta-segment-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.ta-segment:has(.ta-segment-input:focus-visible) { outline: 2px solid var(--clay-dark); outline-offset: -3px; z-index: 1; }
+.ta-segment.checked:has(.ta-segment-input:focus-visible) { outline-color: #fff8ef; }
+.ta-segment:has(.ta-segment-input:disabled) { cursor: default; opacity: 0.6; }
+
+.ta-access-note { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; font-size: 13px; line-height: 1.5; }
+.ta-access-note > span { flex: 1 1 260px; min-width: 0; }
+.ta-picker + .ta-key-note, .ta-picker ~ .ta-key-note { margin-top: 10px; }
+.ta-link-button { min-height: 30px; font-size: 13px; }
+
+/* --- Ordered model lists (Rewrite panel models, ensemble members). --- */
+.ta-ref-row { align-items: center; }
+.ta-ref-index { flex: 0 0 auto; min-width: 22px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+.ta-list-actions { align-items: center; gap: 10px; }
+.ta-list-count { margin: 0; font-size: 13px; color: var(--muted); }
+
+/* --- Settings › Text Assist: usage steps and the model summary. --- */
+.ta-usage p { margin: 8px 0 0; }
+.ta-steps { margin: 6px 0 0; padding-left: 22px; line-height: 1.7; }
+.ta-model-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-soft); }
+.ta-model-summary-text { display: grid; flex: 1 1 260px; gap: 2px; margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.ta-model-summary-meta { color: var(--muted); font-size: 12px; }
+
+@media (max-width: 620px) {
+  .ta-picker-compact { flex-basis: 100%; }
+  .ta-segment { padding: 0 9px; }
+}
+
+/* --- Classic appearance. --- */
+[data-appearance="classic"] .ta-area-title { font-family: var(--font-ui); font-size: 15px; font-weight: 700; }
+[data-appearance="classic"] .ta-area-summary .ta-area-title { font-size: 13px; }
+[data-appearance="classic"] .ta-area-secondary { border: 2px groove #eee; border-radius: 0; background: #c0c0c0; }
+[data-appearance="classic"] .ta-area-summary:focus-visible { outline: 1px dotted #000; outline-offset: -4px; border-radius: 0; }
+[data-appearance="classic"] .ta-segments { border: 2px inset #eee; border-radius: 0; background: #c0c0c0; gap: 2px; padding: 1px; }
+[data-appearance="classic"] .ta-segment { min-height: 24px; padding: 0 8px; border: 2px outset #eee; color: #000; background: #c0c0c0; font-size: 12px; }
+[data-appearance="classic"] .ta-segment + .ta-segment { border-left: 2px outset #eee; }
+[data-appearance="classic"] .ta-segment:hover { background: #d0d0d0; }
+[data-appearance="classic"] .ta-segment.checked { border-style: inset; background: #dfdfdf; color: #000; font-weight: 700; }
+[data-appearance="classic"] .ta-segment:has(.ta-segment-input:focus-visible),
+[data-appearance="classic"] .ta-segment.checked:has(.ta-segment-input:focus-visible) { outline: 1px dotted #000; outline-offset: -4px; }
+[data-appearance="classic"] .ta-effort-field .ta-effort-none { min-height: 24px; border: 2px inset #eee; border-radius: 0; background: #c0c0c0; }
+[data-appearance="classic"] .ta-picker-compact .ta-picker-model select { min-height: 28px; }
+[data-appearance="classic"] .ta-model-summary { border: 2px groove #eee; border-radius: 0; background: #c0c0c0; }

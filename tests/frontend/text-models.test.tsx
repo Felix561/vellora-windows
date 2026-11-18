@@ -198,7 +198,7 @@ describe("OpenAI-compatible endpoints", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("edits an endpoint and drops favorites for models it no longer lists", async () => {
+  it("edits an endpoint and drops Rewrite panel models it no longer lists", async () => {
     const local: ModelRef = { provider: "openai_compatible", model: "llama3.2", endpoint: "ollama" };
     const { user, onChange } = await openTextModels({ openaiCompatible: [ollama], favoriteModels: [luna, local] });
     await user.click(screen.getByRole("button", { name: "Edit Ollama" }));
@@ -218,7 +218,7 @@ describe("OpenAI-compatible endpoints", () => {
       openaiCompatible: [{ ...ollama, name: "Ollama local", models: ["qwen3:8b"] }],
       favoriteModels: [luna],
     });
-    expect(await screen.findByText("Ollama local updated. 1 favorite for removed models was removed.")).toBeInTheDocument();
+    expect(await screen.findByText("Ollama local updated. 1 Rewrite panel model that the endpoint no longer lists was removed.")).toBeInTheDocument();
   });
 
   it("removes an endpoint with its key after confirmation", async () => {
@@ -248,82 +248,171 @@ describe("OpenAI-compatible endpoints", () => {
   });
 });
 
-describe("favorite models", () => {
-  it("adds catalog models with only their efforts and endpoint models without effort", async () => {
-    const { user, onChange } = await openTextModels({ openaiCompatible: [ollama] });
-    const form = screen.getByRole("form", { name: "Add a favorite model" });
-    const model = within(form).getByLabelText("Model");
-    const effort = within(form).getByLabelText("Effort");
-    const groups = within(model).getAllByRole("group").map((group) => group.getAttribute("label"));
-    expect(groups).toEqual(["OpenAI", "Anthropic", "Google Gemini", "Ollama (OpenAI-compatible)"]);
-    expect(within(model).getByRole("option", { name: /^Claude Haiku 5\.5 .* needs key$/ })).toBeInTheDocument();
+describe("Text Assist models layout", () => {
+  it("puts Text Assist models first and keeps providers and advanced settings collapsible", async () => {
+    const { user } = await openTextModels();
+    const panel = screen.getByRole("tabpanel", { name: "Text models" });
+    const headings = within(panel).getAllByRole("heading").map((heading) => heading.textContent);
+    expect(headings.slice(0, 4)).toEqual(["Text Assist models", "Quick Polish", "Rewrite panel models", "Ensemble profiles"]);
+    const providers = screen.getByText("Providers & keys").closest("details") as HTMLDetailsElement;
+    const advanced = screen.getByText("Advanced").closest("details") as HTMLDetailsElement;
+    expect(providers.open).toBe(false);
+    expect(advanced.open).toBe(false);
+    expect(within(providers).getByText(/OpenAI key saved · Anthropic no key · Google Gemini key saved · subscription bridges off/)).toBeInTheDocument();
+    expect(within(providers).getByRole("heading", { name: "Provider keys" })).toBeInTheDocument();
+    expect(within(providers).getByRole("heading", { name: "Subscription bridges (personal use)" })).toBeInTheDocument();
+    expect(within(advanced).getByRole("heading", { name: "OpenAI-compatible endpoints" })).toBeInTheDocument();
+    expect(within(advanced).getByRole("heading", { name: "Model colors" })).toBeInTheDocument();
+    await user.click(screen.getByText("Advanced"));
+    expect(advanced.open).toBe(true);
+  });
 
-    await user.selectOptions(model, within(model).getByRole("option", { name: /^Gemini 3\.1 Flash-Lite/ }));
-    expect(within(effort).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["minimal", "low", "medium", "high"]);
-    expect(effort).toHaveValue("minimal");
-    await user.selectOptions(effort, "high");
-    await user.click(within(form).getByRole("button", { name: "Add favorite" }));
-    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
-    expect(lastAssist(onChange).favoriteModels).toEqual([luna, { provider: "gemini", model: "gemini-3.1-flash-lite", effort: "high" }]);
+  it("opens on the Text models tab when asked to", async () => {
+    render(<ModelsView settings={settings()} onSettingsChange={vi.fn()} initialTab="text" />);
+    expect(screen.getByRole("tab", { name: "Text models" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("heading", { name: "Text Assist models" })).toBeInTheDocument();
+  });
+});
 
-    await user.selectOptions(model, within(model).getByRole("option", { name: /^Claude Haiku/ }));
-    expect(within(effort).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["none"]);
-    expect(screen.getByText(/Anthropic has no saved key yet/)).toBeInTheDocument();
-
-    await user.selectOptions(model, within(model).getByRole("option", { name: "llama3.2" }));
-    expect(effort).toBeDisabled();
-    expect(effort).toHaveDisplayValue("No effort sent");
-    await user.click(within(form).getByRole("button", { name: "Add favorite" }));
-    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
-    expect(lastAssist(onChange).favoriteModels).toEqual([
-      luna,
-      { provider: "gemini", model: "gemini-3.1-flash-lite", effort: "high" },
-      { provider: "openai_compatible", model: "llama3.2", endpoint: "ollama" },
+describe("Quick Polish picker", () => {
+  it("groups models by provider with prices, recommended tags and missing-key marks", async () => {
+    await openTextModels();
+    const model = screen.getByRole("combobox", { name: "Quick Polish model" });
+    const groups = within(model).getAllByRole("group");
+    expect(groups.map((group) => group.getAttribute("label"))).toEqual(["OpenAI", "Anthropic", "Google Gemini"]);
+    expect(within(groups[0]).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "GPT-6 Luna · $0.20 in / $0.80 out per 1M · Recommended",
+      "GPT-5.6 Luna · $1.00 in / $4.00 out per 1M",
     ]);
-    const list = screen.getByRole("list", { name: "Favorite models" });
-    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
-    expect(within(list).getByText("No effort sent")).toBeInTheDocument();
+    expect(within(groups[1]).getByRole("option")).toHaveTextContent("Claude Haiku 5.5 · $0.20 in / $0.80 out per 1M · Recommended · needs key");
+    expect(within(groups[2]).getByRole("option")).not.toHaveTextContent("needs key");
+    expect(model).toHaveDisplayValue(/^GPT-6 Luna/);
+    // Rewrite panel rows do not tag quick candidates.
+    const row = screen.getByRole("combobox", { name: "Rewrite panel model 1" });
+    expect(within(row).getByRole("option", { name: /^GPT-6 Luna/ })).not.toHaveTextContent("Recommended");
   });
 
-  it("rejects a duplicate favorite and stops at twelve", async () => {
+  it("shows only the model's efforts and preselects the default effort when the model changes", async () => {
     const { user, onChange } = await openTextModels();
-    const form = screen.getByRole("form", { name: "Add a favorite model" });
-    await user.selectOptions(within(form).getByLabelText("Model"), within(form).getByRole("option", { name: /^GPT-6 Luna/ }));
-    await user.click(within(form).getByRole("button", { name: "Add favorite" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("This model and effort is already a favorite.");
-    expect(onChange).not.toHaveBeenCalled();
+    const group = () => screen.getByRole("radiogroup", { name: "Quick Polish effort" });
+    const efforts = () => within(group()).getAllByRole("radio");
+    expect(efforts().map((radio) => radio.getAttribute("value"))).toEqual(["none", "low", "medium"]);
+    expect(within(group()).getByRole("radio", { name: "None" })).toBeChecked();
+
+    await user.click(within(group()).getByRole("radio", { name: "Medium" }));
+    await waitFor(() => expect(lastAssist(onChange).quickModel).toEqual({ ...luna, effort: "medium" }));
+    expect(await screen.findByText("Quick Polish now uses GPT-6 Luna, Medium.")).toBeInTheDocument();
+
+    // Gemini Flash-Lite offers other efforts; its default (minimal) is preselected, not the previous medium.
+    const model = screen.getByRole("combobox", { name: "Quick Polish model" });
+    await user.selectOptions(model, within(model).getByRole("option", { name: /^Gemini 3\.1 Flash-Lite/ }));
+    await waitFor(() => expect(lastAssist(onChange).quickModel).toEqual({ provider: "gemini", model: "gemini-3.1-flash-lite", effort: "minimal" }));
+    await waitFor(() => expect(efforts().map((radio) => radio.getAttribute("value"))).toEqual(["minimal", "low", "medium", "high"]));
+    expect(within(group()).getByRole("radio", { name: "Minimal" })).toBeChecked();
+
+    // Arrow keys move through the segmented control like any radio group.
+    within(group()).getByRole("radio", { name: "Minimal" }).focus();
+    await user.keyboard("{ArrowRight}");
+    await waitFor(() => expect(lastAssist(onChange).quickModel.effort).toBe("low"));
   });
 
-  it("disables adding when twelve favorites exist", async () => {
-    const many = Array.from({ length: 12 }, (_, index) => ({ provider: "openai", model: `m${index}` }) as ModelRef);
-    await openTextModels({ favoriteModels: many });
-    expect(screen.getByRole("button", { name: "Add favorite" })).toBeDisabled();
-    expect(screen.getByText("You have 12 favorites, the maximum. Remove one to add another.")).toBeInTheDocument();
+  it("explains a missing key inline and opens Providers & keys", async () => {
+    const { user } = await openTextModels({ quickModel: { provider: "anthropic", model: "claude-haiku-5-5", effort: "none" } });
+    const note = screen.getByText(/No Anthropic API key is saved\. Add it under AI Models › Text models › Providers & keys\./);
+    expect(screen.getByRole("combobox", { name: "Quick Polish model" })).toHaveAccessibleDescription(/No Anthropic API key is saved/);
+    expect(screen.getByText("Providers & keys").closest("summary")).toHaveTextContent("A model you use needs a key or a bridge");
+    const providers = screen.getByText("Providers & keys").closest("details") as HTMLDetailsElement;
+    expect(providers.open).toBe(false);
+    await user.click(within(note.closest("p") as HTMLElement).getByRole("button", { name: "Show Providers & keys" }));
+    expect(providers.open).toBe(true);
   });
 
-  it("reorders, changes efforts and removes favorites", async () => {
-    const haiku: ModelRef = { provider: "anthropic", model: "claude-haiku-5-5", effort: "none" };
-    const gemini: ModelRef = { provider: "gemini", model: "gemini-3.1-flash-lite", effort: "low" };
+  it("sends OpenAI key problems to Settings without a Providers button", async () => {
+    vi.mocked(api.getTextProviderKeys).mockResolvedValue(textProviderKeys({ openai: false, gemini: true }));
+    render(<Harness initial={settings()} onChange={vi.fn().mockResolvedValue(undefined)} />);
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Text models" }));
+    const notes = await screen.findAllByText(/No OpenAI API key is saved\. Add it under Settings › General › OpenAI key/);
+    expect(within(notes[0].closest("p") as HTMLElement).queryByRole("button")).not.toBeInTheDocument();
+  });
+});
+
+describe("Rewrite panel models", () => {
+  const haiku: ModelRef = { provider: "anthropic", model: "claude-haiku-5-5", effort: "none" };
+  const gemini: ModelRef = { provider: "gemini", model: "gemini-3.1-flash-lite", effort: "low" };
+
+  it("reorders, edits in place and removes models", async () => {
     const { user, onChange } = await openTextModels({ favoriteModels: [luna, haiku, gemini], modelColors: { "anthropic/claude-haiku-5-5": "#000000" } });
-    const list = screen.getByRole("list", { name: "Favorite models" });
-    expect(within(list).getAllByRole("listitem")[1]).toHaveTextContent("needs key");
+    const list = screen.getByRole("list", { name: "Rewrite panel models" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(list).getAllByRole("listitem")[1]).toHaveTextContent("No Anthropic API key is saved");
     expect(within(list).getByRole("button", { name: "Move GPT-6 Luna, None up" })).toBeDisabled();
     expect(within(list).getByRole("button", { name: "Move Gemini 3.1 Flash-Lite, Low down" })).toBeDisabled();
+    expect(screen.getByText("3 of 12 models")).toBeInTheDocument();
 
     await user.click(within(list).getByRole("button", { name: "Move Gemini 3.1 Flash-Lite, Low up" }));
     await waitFor(() => expect(lastAssist(onChange).favoriteModels).toEqual([luna, gemini, haiku]));
     await waitFor(() => expect(screen.getByRole("button", { name: "Move Gemini 3.1 Flash-Lite, Low up" })).toHaveFocus());
     expect(screen.getByText("Gemini 3.1 Flash-Lite, Low moved to position 2.")).toBeInTheDocument();
 
-    const lunaEffort = screen.getByRole("combobox", { name: "Effort for GPT-6 Luna, None" });
-    expect(within(lunaEffort).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["none", "low", "medium"]);
-    await user.selectOptions(lunaEffort, "medium");
+    const firstEfforts = screen.getByRole("radiogroup", { name: "Effort for Rewrite panel model 1" });
+    expect(within(firstEfforts).getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual(["none", "low", "medium"]);
+    await user.click(within(firstEfforts).getByRole("radio", { name: "Medium" }));
     await waitFor(() => expect(lastAssist(onChange).favoriteModels[0]).toEqual({ ...luna, effort: "medium" }));
+    expect(await screen.findByText("Rewrite panel model 1 set to GPT-6 Luna, Medium.")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Remove Claude Haiku 5.5, None from favorites" }));
-    await waitFor(() => expect(lastAssist(onChange).favoriteModels).toEqual([{ ...luna, effort: "medium" }, gemini]));
+    // Another model in row 2 gets that model's default effort.
+    await user.selectOptions(screen.getByRole("combobox", { name: "Rewrite panel model 2" }),
+      within(screen.getByRole("combobox", { name: "Rewrite panel model 2" })).getByRole("option", { name: /^GPT-5\.6 Luna/ }));
+    await waitFor(() => expect(lastAssist(onChange).favoriteModels[1]).toEqual({ provider: "openai", model: "gpt-5.6-luna", effort: "low" }));
+
+    await user.click(screen.getByRole("button", { name: "Remove Claude Haiku 5.5, None from the Rewrite panel" }));
+    await waitFor(() => expect(lastAssist(onChange).favoriteModels).toEqual([
+      { ...luna, effort: "medium" },
+      { provider: "openai", model: "gpt-5.6-luna", effort: "low" },
+    ]));
     // The removed model's color override is pruned with it.
     expect(lastAssist(onChange).modelColors).toEqual({});
+  });
+
+  it("adds the next unused model, focuses it and rejects duplicates", async () => {
+    const { user, onChange } = await openTextModels();
+    await user.click(screen.getByRole("button", { name: "Add model" }));
+    await waitFor(() => expect(lastAssist(onChange).favoriteModels).toEqual([luna, { provider: "openai", model: "gpt-5.6-luna", effort: "low" }]));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Rewrite panel model 2" })).toHaveFocus());
+    expect(screen.getByText("2 of 12 models")).toBeInTheDocument();
+
+    const row = screen.getByRole("combobox", { name: "Rewrite panel model 2" });
+    await user.selectOptions(row, within(row).getByRole("option", { name: /^GPT-6 Luna/ }));
+    expect(screen.getByRole("alert")).toHaveTextContent("This model and effort is already in the Rewrite panel.");
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers endpoint models without effort", async () => {
+    const { user, onChange } = await openTextModels({ openaiCompatible: [ollama] });
+    const row = screen.getByRole("combobox", { name: "Rewrite panel model 1" });
+    expect(within(row).getAllByRole("group").map((group) => group.getAttribute("label"))).toEqual(["OpenAI", "Anthropic", "Google Gemini", "Ollama (OpenAI-compatible)"]);
+    await user.selectOptions(row, within(row).getByRole("option", { name: "llama3.2" }));
+    await waitFor(() => expect(lastAssist(onChange).favoriteModels).toEqual([{ provider: "openai_compatible", model: "llama3.2", endpoint: "ollama" }]));
+    const list = screen.getByRole("list", { name: "Rewrite panel models" });
+    expect(within(list).getByText("No effort sent")).toBeInTheDocument();
+    expect(within(list).queryByRole("radiogroup")).not.toBeInTheDocument();
+    // Quick Polish does not offer endpoint models.
+    expect(within(screen.getByRole("combobox", { name: "Quick Polish model" })).queryByRole("option", { name: "llama3.2" })).not.toBeInTheDocument();
+  });
+
+  it("disables adding at twelve models", async () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({ provider: "openai", model: `m${index}` }) as ModelRef);
+    await openTextModels({ favoriteModels: many });
+    const section = screen.getByRole("heading", { name: "Rewrite panel models" }).closest("section") as HTMLElement;
+    expect(within(section).getByRole("button", { name: "Add model" })).toBeDisabled();
+    expect(within(section).getByText("12 of 12 models, the maximum. Remove one to add another.")).toBeInTheDocument();
+    expect(within(section).getAllByRole("option", { name: /m0 \(not in the model list\)/ })).toHaveLength(1);
+  });
+
+  it("explains an empty list", async () => {
+    await openTextModels({ favoriteModels: [] });
+    expect(screen.getByText("No models yet. The Rewrite panel then uses only the Quick Polish model.")).toBeInTheDocument();
+    expect(screen.getByText("0 of 12 models")).toBeInTheDocument();
   });
 });
 
@@ -332,7 +421,7 @@ describe("model colors", () => {
     const { user, onChange } = await openTextModels();
     const colors = screen.getByRole("list", { name: "Model colors" });
     expect(within(colors).getAllByRole("listitem")).toHaveLength(1);
-    expect(within(colors).getByText(/OpenAI · Quick Polish, favorite · default color/)).toBeInTheDocument();
+    expect(within(colors).getByText(/OpenAI · Quick Polish, Rewrite panel · default color/)).toBeInTheDocument();
     const hex = within(colors).getByLabelText("Hex color for GPT-6 Luna");
     expect(hex).toHaveValue("#5b8def");
     expect(within(colors).getByRole("button", { name: "Save color for GPT-6 Luna" })).toBeDisabled();
@@ -386,22 +475,24 @@ describe("ensemble profiles", () => {
 
     await user.type(within(form).getByLabelText("Name"), "Deep academic");
     expect(within(form).getByText(/ID deep-academic, derived from the name\./)).toBeInTheDocument();
-    const picker = within(form).getByRole("group", { name: "Add a model to the profile" });
-    const model = within(picker).getByLabelText("Model");
-    const effort = within(picker).getByLabelText("Effort");
-    await user.selectOptions(model, within(model).getByRole("option", { name: /^GPT-6 Luna/ }));
-    expect(within(effort).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["none", "low", "medium"]);
-    await user.selectOptions(effort, "low");
-    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    const efforts = (row: number) => within(form).getByRole("radiogroup", { name: `Effort for Profile model ${row}` });
+
+    await user.click(within(form).getByRole("button", { name: "Add model" }));
+    expect(within(form).getByRole("combobox", { name: "Profile model 1" })).toHaveFocus();
+    expect(within(efforts(1)).getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual(["none", "low", "medium"]);
+    await user.click(within(efforts(1)).getByRole("radio", { name: "Low" }));
     // The same model again with another effort is allowed; the same effort twice is not.
-    await user.selectOptions(effort, "medium");
-    await user.click(within(picker).getByRole("button", { name: "Add model" }));
-    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    await user.click(within(form).getByRole("button", { name: "Add model" }));
+    await user.click(within(efforts(2)).getByRole("radio", { name: "Medium" }));
+    await user.click(within(form).getByRole("button", { name: "Add model" }));
+    await user.click(within(efforts(3)).getByRole("radio", { name: "Low" }));
     expect(within(form).getByRole("alert")).toHaveTextContent("This model and effort is already in the profile.");
-    await user.selectOptions(model, within(model).getByRole("option", { name: /^Gemini 3\.1 Flash-Lite/ }));
-    await user.click(within(picker).getByRole("button", { name: "Add model" }));
+    const third = within(form).getByRole("combobox", { name: "Profile model 3" });
+    await user.selectOptions(third, within(third).getByRole("option", { name: /^Gemini 3\.1 Flash-Lite/ }));
+    await user.click(within(efforts(3)).getByRole("radio", { name: "Medium" }));
     await user.click(within(form).getByRole("button", { name: "Move Gemini 3.1 Flash-Lite, Medium up" }));
     await waitFor(() => expect(within(form).getByRole("button", { name: "Move Gemini 3.1 Flash-Lite, Medium up" })).toHaveFocus());
+    expect(within(form).getByText("3 of 9 models")).toBeInTheDocument();
 
     await user.click(within(form).getByRole("button", { name: "Add profile" }));
     await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
@@ -418,6 +509,18 @@ describe("ensemble profiles", () => {
     const list = within(section).getByRole("list", { name: "Ensemble profiles" });
     expect(within(list).getByText("3 models")).toBeInTheDocument();
     expect(within(list).getByRole("list", { name: "Models in Deep academic" })).toHaveTextContent("GPT-6 Luna · Low");
+  });
+
+  it("stops adding members at nine", async () => {
+    const members = Array.from({ length: 9 }, (_, index) => ({ provider: "openai", model: `m${index}` }) as ModelRef);
+    const { user } = await openTextModels({ ensembleProfiles: [{ id: "big", name: "Big", members }] });
+    await user.click(within(profilesSection()).getByRole("button", { name: "Edit Big" }));
+    const form = within(profilesSection()).getByRole("form", { name: "Edit Big" });
+    expect(within(form).getByRole("button", { name: "Add model" })).toBeDisabled();
+    expect(within(form).getByText("9 of 9 models, the maximum. Remove one to add another.")).toBeInTheDocument();
+    await user.click(within(form).getByRole("button", { name: "Remove m8 from the profile" }));
+    expect(within(form).getByRole("button", { name: "Add model" })).toBeEnabled();
+    expect(within(form).getByText("8 of 9 models")).toBeInTheDocument();
   });
 
   it("edits a profile with a fixed id and removes it after confirmation", async () => {
@@ -441,13 +544,12 @@ describe("ensemble profiles", () => {
 
     await user.clear(name);
     await user.type(name, "Quick");
-    const picker = within(form).getByRole("group", { name: "Add a model to the profile" });
-    const model = within(picker).getByLabelText("Model");
-    await user.selectOptions(model, within(model).getByRole("option", { name: /^Claude Haiku/ }));
-    await user.click(within(picker).getByRole("button", { name: "Add model" }));
-    await user.selectOptions(model, within(model).getByRole("option", { name: /^GPT-6 Luna/ }));
-    await user.click(within(picker).getByRole("button", { name: "Add model" }));
-    await user.selectOptions(within(form).getByRole("combobox", { name: "Effort for GPT-6 Luna, None" }), "medium");
+    await user.click(within(form).getByRole("button", { name: "Add model" }));
+    const first = within(form).getByRole("combobox", { name: "Profile model 1" });
+    await user.selectOptions(first, within(first).getByRole("option", { name: /^Claude Haiku/ }));
+    expect(within(form).getByText(/No Anthropic API key is saved/)).toBeInTheDocument();
+    await user.click(within(form).getByRole("button", { name: "Add model" }));
+    await user.click(within(within(form).getByRole("radiogroup", { name: "Effort for Profile model 2" })).getByRole("radio", { name: "Medium" }));
     await user.click(within(form).getByRole("button", { name: "Save profile" }));
     await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
     expect(lastAssist(onChange).ensembleProfiles).toEqual([

@@ -59,7 +59,12 @@ export function kindLabel(kind: string) {
 const reasonTexts: Record<string, string> = {
   target_changed: "The target window or selection changed, so nothing was pasted.",
   focus_changed: "Focus moved to another window, so nothing was pasted.",
-  user_activity: "You typed or clicked while the result was being applied, so nothing was pasted.",
+  user_activity: "Keyboard or mouse input kept coming while the model worked, so nothing was pasted.",
+  selection_changed: "The selection changed while the model worked, so nothing was pasted.",
+  selection_lost: "The selection was gone (typed over or clicked away), so nothing was pasted.",
+  terminal: "Terminals are skipped: Ctrl+V types at the prompt instead of replacing the selection.",
+  elevated_app: "The app runs as administrator, and Windows blocks Vellora's keys there.",
+  clipboard_unsupported: "Your clipboard held more than Vellora can save and restore, so it was left untouched.",
   typed: "You typed while the result was being applied, so nothing was pasted.",
   modifiers_held: "Keys were still held down, so the paste was skipped.",
   input_blocked: "Windows blocked simulated input. The app may be running as administrator.",
@@ -80,6 +85,7 @@ const reasonTexts: Record<string, string> = {
   guard_wrapper: "The model wrapped the text in quotes or a code block, so it was not pasted.",
   guard_markup: "LaTeX, Markdown or code markup changed, so the result was not pasted.",
   guard_line_count: "The number of lines changed, so the result was not pasted.",
+  guard_whitespace: "Indentation, trailing spaces or tabs changed, so the result was not pasted.",
   guard_too_many_changes: "The model changed more than spelling and grammar, so the result was not pasted.",
   guard_length: "The length changed too much, so the result was not pasted.",
   missing_key: "No OpenAI API key is saved.",
@@ -664,6 +670,132 @@ export function catalogOptionLabel(model: TextModelInfo, missingKey = false) {
   const plan = planBillingLabel(model.provider);
   const price = plan ? (model.label.includes(plan) ? "$0 marginal" : `${plan}, $0 marginal`) : formatModelPrice(model);
   return `${model.label} - ${price}${retiring}${missingKey ? " - needs key" : ""}`;
+}
+
+// ---------------------------------------------------------------------------
+// The shared "model + effort" picker (Quick Polish, Rewrite panel models, ensemble members).
+// ---------------------------------------------------------------------------
+
+/** Compact price for a picker option: "$0.20 in / $0.80 out per 1M", or "plan" for subscription-bridge models. */
+export function compactModelPrice(model: TextModelInfo) {
+  if (isCliProvider(model.provider)) return "plan";
+  return `$${model.inputUsdPerMillion.toFixed(2)} in / $${model.outputUsdPerMillion.toFixed(2)} out per 1M`;
+}
+
+/** Whether a model can run as configured: "ok", a missing API key, or a subscription bridge that is off. */
+export type ModelAccess = "ok" | "needs_key" | "bridge_off";
+
+/**
+ * Access status for `ref`. `openaiKey`, when known, overrides `keys.openai` (Settings knows the
+ * OpenAI key status from App). Unknown key status (null keys) never reports a missing key.
+ */
+export function modelAccess(ref: Pick<ModelRef, "provider">, keys: TextProviderKeys | null, cli: CliBridges | null | undefined, openaiKey?: boolean | null): ModelAccess {
+  if (needsBridge(ref, cli)) return "bridge_off";
+  if (ref.provider === "openai" && typeof openaiKey === "boolean") return openaiKey ? "ok" : "needs_key";
+  return needsKey(ref, keys) ? "needs_key" : "ok";
+}
+
+/** Inline explanation of an access problem and where to fix it, or null when the model can run. */
+export function modelAccessNote(ref: Pick<ModelRef, "provider">, access: ModelAccess) {
+  if (access === "bridge_off") {
+    return `${catalogGroupLabel(ref.provider)} is turned off, so this model cannot run. Turn it on under AI Models › Text models › Providers & keys › Subscription bridges, or choose another model.`;
+  }
+  if (access === "needs_key") {
+    return ref.provider === "openai"
+      ? "No OpenAI API key is saved. Add it under Settings › General › OpenAI key; dictation uses the same key."
+      : `No ${providerLabel(ref.provider)} API key is saved. Add it under AI Models › Text models › Providers & keys.`;
+  }
+  return null;
+}
+
+/** True when the fix for `access` lives in AI Models › Text models › Providers & keys (not in Settings). */
+export function fixableInProviders(ref: Pick<ModelRef, "provider">, access: ModelAccess) {
+  return access === "bridge_off" || (access === "needs_key" && ref.provider !== "openai");
+}
+
+/** Option text: "GPT-6 Luna · $0.20 in / $0.80 out per 1M · Recommended · needs key". */
+export function pickerOptionLabel(model: TextModelInfo, access: ModelAccess = "ok", recommend = false) {
+  const parts = [model.label, compactModelPrice(model)];
+  if (recommend && model.quickCandidate) parts.push("Recommended");
+  if (model.shutdown) parts.push(`retires ${model.shutdown}`);
+  if (access === "needs_key") parts.push("needs key");
+  if (access === "bridge_off") parts.push("bridge off");
+  return parts.join(" · ");
+}
+
+/**
+ * Catalog models for the picker, grouped by provider: API providers first, then the subscription
+ * bridges. Bridge models stay listed while their bridge is off (marked "bridge off") so the picker can
+ * explain how to turn them on. Quick candidates come first within each group.
+ */
+export function pickerGroups(models: readonly TextModelInfo[]) {
+  const providers: TextProviderKind[] = [...CATALOG_PROVIDERS, ...CLI_PROVIDERS];
+  return providers.map((provider) => {
+    const own = models.filter((model) => model.provider === provider);
+    return { provider, models: [...own.filter((model) => model.quickCandidate), ...own.filter((model) => !model.quickCandidate)] };
+  }).filter((group) => group.models.length > 0);
+}
+
+/** The effort preselected when a model is picked: its default, else its first effort. */
+export function defaultEffortFor(model: TextModelInfo): Effort | null {
+  if (model.defaultEffort && model.efforts.includes(model.defaultEffort)) return model.defaultEffort;
+  return model.efforts[0] ?? null;
+}
+
+/**
+ * Reference for a picker option value: catalog models get their default effort, endpoint models
+ * none. Returns null for unknown catalog models and malformed values.
+ */
+export function refForPickerValue(value: string, catalog: readonly TextModelInfo[], endpoints: readonly CompatEndpoint[]): ModelRef | null {
+  const parsed = parseModelOptionValue(value);
+  if (!parsed) return null;
+  if (parsed.provider === "openai_compatible") {
+    const endpoint = endpoints.find((item) => item.id === parsed.endpoint);
+    return endpoint && endpoint.models.includes(parsed.model) ? modelRef("openai_compatible", parsed.model, null, endpoint.id) : null;
+  }
+  const model = findCatalogModel(catalog, parsed);
+  return model ? modelRef(model.provider, model.id, defaultEffortFor(model)) : null;
+}
+
+/**
+ * The model "Add model" appends to a list: the first catalog model (picker order, recommended first)
+ * with its default effort that is not in `refs` yet, skipping subscription bridges that are off; then
+ * the same models with their other efforts. Null when every combination is taken.
+ */
+export function nextUnusedRef(refs: readonly ModelRef[], catalog: readonly TextModelInfo[], cli?: CliBridges | null): ModelRef | null {
+  const candidates = pickerGroups(catalog)
+    .filter((group) => !needsBridge({ provider: group.provider }, cli))
+    .flatMap((group) => group.models);
+  const free = (ref: ModelRef) => !refs.some((item) => sameModelRef(item, ref));
+  for (const model of candidates) {
+    const ref = modelRef(model.provider, model.id, defaultEffortFor(model));
+    if (free(ref)) return ref;
+  }
+  for (const model of candidates) {
+    for (const effort of model.efforts) {
+      const ref = modelRef(model.provider, model.id, effort);
+      if (free(ref)) return ref;
+    }
+  }
+  return null;
+}
+
+export type RefsResult = { refs: ModelRef[]; error: null } | { refs: null; error: string };
+
+/** Replaces the reference at `index`; rejects an exact duplicate of another entry. */
+export function replaceRef(refs: readonly ModelRef[], index: number, ref: ModelRef, duplicate: string): RefsResult {
+  if (index < 0 || index >= refs.length) return { refs: null, error: "That model is no longer in the list." };
+  if (refs.some((item, position) => position !== index && sameModelRef(item, ref))) return { refs: null, error: duplicate };
+  return { refs: refs.map((item, position) => (position === index ? ref : item)), error: null };
+}
+
+/** One-line summary of a model choice: "GPT-6 Luna · None effort · $0.20 in / $0.80 out per 1M". */
+export function modelChoiceSummary(ref: ModelRef, catalog: readonly TextModelInfo[], endpoints: readonly CompatEndpoint[] = []) {
+  if (ref.provider === "openai_compatible") return `${favoriteName(ref, catalog, endpoints)} · no effort sent`;
+  const model = findCatalogModel(catalog, ref);
+  const parts = [model?.label ?? ref.model, ref.effort ? `${effortLabel(ref.effort)} effort` : "default effort"];
+  if (model) parts.push(compactModelPrice(model));
+  return parts.join(" · ");
 }
 
 /** Readable name for a favorite: "GPT-6 Luna, None" or "llama3.2 on Ollama". */

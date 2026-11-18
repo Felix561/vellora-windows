@@ -30,9 +30,20 @@ import {
   setModelColor,
   validateBaseUrl,
   validateEndpointDraft,
+  compactModelPrice,
+  defaultEffortFor,
+  fixableInProviders,
+  modelAccess,
+  modelAccessNote,
+  modelChoiceSummary,
+  nextUnusedRef,
+  pickerGroups,
+  pickerOptionLabel,
+  refForPickerValue,
+  replaceRef,
 } from "../../src/lib/textAssist";
 import type { CompatEndpoint, EnsembleProfile, ModelRef } from "../../src/lib/types";
-import { textAssistOverview, textAssistSettings, textModel, textProviderKeys } from "./fixtures";
+import { cliModels, textAssistOverview, textAssistSettings, textModel, textProviderKeys } from "./fixtures";
 
 const catalog = textAssistOverview().models;
 const luna: ModelRef = { provider: "openai", model: "gpt-6-luna", effort: "none" };
@@ -266,5 +277,79 @@ describe("model colors", () => {
     });
     expect(pruneModelColors(crowded)).toEqual(crowded.modelColors);
     expect(setModelColor(crowded, "openai/gpt-6-luna", "#222222", "#5b8def").error).toMatch(/at most 64/);
+  });
+});
+
+describe("model + effort picker helpers", () => {
+  const off = { codex: { enabled: false, path: null }, claude: { enabled: false, path: null } };
+  const codexOn = { ...off, codex: { enabled: true, path: null } };
+  const [planLuna] = cliModels();
+  const lite = catalog.find((model) => model.provider === "gemini")!;
+
+  it("labels options with price or plan, the Recommended tag and access marks", () => {
+    expect(compactModelPrice(textModel())).toBe("$0.20 in / $0.80 out per 1M");
+    expect(compactModelPrice(planLuna)).toBe("plan");
+    expect(pickerOptionLabel(textModel(), "ok", true)).toBe("GPT-6 Luna · $0.20 in / $0.80 out per 1M · Recommended");
+    expect(pickerOptionLabel(textModel(), "ok", false)).toBe("GPT-6 Luna · $0.20 in / $0.80 out per 1M");
+    expect(pickerOptionLabel(textModel({ shutdown: "2027-01-31" }), "needs_key")).toBe("GPT-6 Luna · $0.20 in / $0.80 out per 1M · retires 2027-01-31 · needs key");
+    expect(pickerOptionLabel(planLuna, "bridge_off", true)).toBe("GPT-6 Luna (ChatGPT plan) · plan · bridge off");
+  });
+
+  it("reports missing keys and disabled bridges with where to fix them", () => {
+    const keys = textProviderKeys();
+    expect(modelAccess(haiku, keys, off)).toBe("needs_key");
+    expect(modelAccess(luna, keys, off)).toBe("ok");
+    expect(modelAccess(luna, keys, off, false)).toBe("needs_key");
+    expect(modelAccess(luna, null, off, true)).toBe("ok");
+    expect(modelAccess(haiku, null, off)).toBe("ok");
+    expect(modelAccess(planLuna, keys, off)).toBe("bridge_off");
+    expect(modelAccess(planLuna, keys, codexOn)).toBe("ok");
+    expect(modelAccessNote(haiku, "needs_key")).toBe("No Anthropic API key is saved. Add it under AI Models › Text models › Providers & keys.");
+    expect(modelAccessNote(luna, "needs_key")).toMatch(/Settings › General › OpenAI key/);
+    expect(modelAccessNote(planLuna, "bridge_off")).toMatch(/^ChatGPT plan via Codex CLI is turned off/);
+    expect(modelAccessNote(luna, "ok")).toBeNull();
+    expect(fixableInProviders(haiku, "needs_key")).toBe(true);
+    expect(fixableInProviders(luna, "needs_key")).toBe(false);
+    expect(fixableInProviders(planLuna, "bridge_off")).toBe(true);
+  });
+
+  it("groups bridge models after the API providers even while their bridge is off", () => {
+    expect(pickerGroups([...cliModels(), ...catalog]).map((group) => group.provider)).toEqual(["openai", "anthropic", "gemini", "codex_cli", "claude_cli"]);
+  });
+
+  it("preselects the model default effort for a picked model", () => {
+    expect(defaultEffortFor(lite)).toBe("minimal");
+    expect(defaultEffortFor(textModel({ efforts: ["low", "high"], defaultEffort: "medium" }))).toBe("low");
+    expect(defaultEffortFor(textModel({ efforts: [], defaultEffort: null }))).toBeNull();
+    expect(refForPickerValue(modelOptionValue({ provider: "gemini", model: lite.id }), catalog, [])).toEqual({ provider: "gemini", model: lite.id, effort: "minimal" });
+    expect(refForPickerValue(modelOptionValue({ provider: "openai_compatible", model: "llama3.2", endpoint: "ollama" }), catalog, [ollama]))
+      .toEqual({ provider: "openai_compatible", model: "llama3.2", endpoint: "ollama" });
+    expect(refForPickerValue(modelOptionValue({ provider: "openai_compatible", model: "gone", endpoint: "ollama" }), catalog, [ollama])).toBeNull();
+    expect(refForPickerValue(modelOptionValue({ provider: "openai", model: "unknown" }), catalog, [])).toBeNull();
+    expect(refForPickerValue("junk", catalog, [])).toBeNull();
+  });
+
+  it("picks the next unused model and effort for Add model", () => {
+    expect(nextUnusedRef([], catalog)).toEqual(luna);
+    expect(nextUnusedRef([luna], catalog)).toEqual({ provider: "openai", model: "gpt-5.6-luna", effort: "low" });
+    // Bridges that are off are skipped.
+    expect(nextUnusedRef([], [planLuna], off)).toBeNull();
+    expect(nextUnusedRef([], [planLuna], codexOn)).toEqual({ provider: "codex_cli", model: "gpt-6-luna", effort: "medium" });
+    // When every default is taken, other efforts follow.
+    const one = [textModel()];
+    expect(nextUnusedRef([luna], one)).toEqual({ ...luna, effort: "low" });
+    expect(nextUnusedRef([luna, { ...luna, effort: "low" }, { ...luna, effort: "medium" }], one)).toBeNull();
+  });
+
+  it("replaces a row and rejects duplicates", () => {
+    expect(replaceRef([luna, haiku], 1, { ...luna, effort: "low" }, "dup")).toEqual({ refs: [luna, { ...luna, effort: "low" }], error: null });
+    expect(replaceRef([luna, haiku], 1, luna, "dup")).toEqual({ refs: null, error: "dup" });
+    expect(replaceRef([luna], 3, haiku, "dup").error).toMatch(/no longer in the list/);
+  });
+
+  it("summarizes a model choice in one line", () => {
+    expect(modelChoiceSummary(luna, catalog)).toBe("GPT-6 Luna · None effort · $0.20 in / $0.80 out per 1M");
+    expect(modelChoiceSummary({ provider: "openai", model: "custom" }, catalog)).toBe("custom · default effort");
+    expect(modelChoiceSummary({ provider: "openai_compatible", model: "llama3.2", endpoint: "ollama" }, catalog, [ollama])).toBe("llama3.2 on Ollama · no effort sent");
   });
 });

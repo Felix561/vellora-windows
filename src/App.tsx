@@ -24,7 +24,7 @@ import type { AppHealthSnapshot, AppSettings, AppSnapshot, DiagnosticEvent, Tran
 import velloraSymbol from "./assets/brand/vellora-symbol.png";
 import { DashboardView } from "./views/DashboardView";
 import { HistoryView } from "./views/HistoryView";
-import { ModelsView } from "./views/ModelsView";
+import { ModelsView, type ModelsTab } from "./views/ModelsView";
 import { SettingsView } from "./views/SettingsView";
 import { StartupView } from "./views/StartupView";
 import { HelpView } from "./views/HelpView";
@@ -34,6 +34,7 @@ type Tab = "dashboard" | "history" | "models" | "settings" | "help" | "setup";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dashboard");
+  const [modelsTab, setModelsTab] = useState<ModelsTab>("transcription");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [hasKey, setHasKey] = useState(false);
@@ -230,7 +231,7 @@ export default function App() {
             <History size={17} />
             History
           </button>
-          <button className={tab === "models" ? "active" : ""} aria-current={tab === "models" ? "page" : undefined} onClick={() => setTab("models")}>
+          <button className={tab === "models" ? "active" : ""} aria-current={tab === "models" ? "page" : undefined} onClick={() => { setModelsTab("transcription"); setTab("models"); }}>
             <SlidersHorizontal size={17} />
             AI Models
           </button>
@@ -282,13 +283,14 @@ export default function App() {
           />
         )}
         {tab === "history" && <HistoryView items={history} onRefresh={refresh} textAssistSaveHistory={settings.textAssist?.saveHistory ?? true} />}
-        {tab === "models" && <ModelsView settings={settings} onSettingsChange={updateSettings} />}
+        {tab === "models" && <ModelsView settings={settings} onSettingsChange={updateSettings} initialTab={modelsTab} />}
         {tab === "settings" && (
           <SettingsView
             settings={settings}
             hasKey={hasKey}
             onSettingsChange={updateSettings}
             onKeyStatusChange={updateKeyStatus}
+            onOpenTextModels={() => { setModelsTab("text"); setTab("models"); }}
           />
         )}
         {tab === "help" && <HelpView settings={settings} onOpenSetup={() => setTab("setup")} />}

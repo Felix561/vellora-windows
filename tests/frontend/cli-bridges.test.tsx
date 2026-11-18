@@ -196,61 +196,49 @@ describe("subscription bridges section", () => {
 });
 
 describe("plan models in the pickers", () => {
-  it("offers plan models for favorites and ensembles only while their bridge is on", async () => {
+  it("lists plan models in every picker, marks them while their bridge is off and explains how to fix it", async () => {
     const { user, onChange, section } = await openBridges();
     await within(section).findAllByText("Ready");
-    const favorites = screen.getByRole("form", { name: "Add a favorite model" });
-    const picker = within(favorites).getByLabelText("Model");
-    expect(within(picker).queryByRole("option", { name: /ChatGPT plan|Claude plan/ })).not.toBeInTheDocument();
+    const picker = screen.getByRole("combobox", { name: "Rewrite panel model 1" });
+    const groupLabels = () => within(picker).getAllByRole("group").map((group) => group.getAttribute("label"));
+    expect(groupLabels()).toEqual(["OpenAI", "Anthropic", "Google Gemini", "ChatGPT plan via Codex CLI (bridge off)", "Claude plan via Claude Code (bridge off)"]);
+    expect(within(picker).getByRole("option", { name: "GPT-6 Luna (ChatGPT plan) · plan · bridge off" })).toBeInTheDocument();
 
     await user.click(within(section).getByRole("checkbox", { name: "Use ChatGPT plan models" }));
     await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
-    const groups = within(picker).getAllByRole("group").map((group) => group.getAttribute("label"));
-    expect(groups).toContain("ChatGPT plan via Codex CLI");
-    expect(groups).not.toContain("Claude plan via Claude Code");
-    const option = within(picker).getByRole("option", { name: "GPT-6 Luna (ChatGPT plan) - $0 marginal" });
-    await user.selectOptions(picker, option);
-    expect(screen.queryByText(/has no saved key yet/)).not.toBeInTheDocument();
-    await user.click(within(favorites).getByRole("button", { name: "Add favorite" }));
+    expect(groupLabels()).toContain("ChatGPT plan via Codex CLI");
+    expect(groupLabels()).toContain("Claude plan via Claude Code (bridge off)");
+    await user.selectOptions(picker, within(picker).getByRole("option", { name: "GPT-6 Luna (ChatGPT plan) · plan" }));
     await waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
-    expect(lastAssist(onChange).favoriteModels.at(-1)).toEqual({ provider: "codex_cli", model: "gpt-6-luna", effort: "medium" });
-    const list = screen.getByRole("list", { name: "Favorite models" });
-    expect(within(list).getByText(/ChatGPT plan · \$0 marginal/)).toBeInTheDocument();
+    // The plan model's default effort is preselected.
+    expect(lastAssist(onChange).favoriteModels[0]).toEqual({ provider: "codex_cli", model: "gpt-6-luna", effort: "medium" });
+    const list = screen.getByRole("list", { name: "Rewrite panel models" });
+    expect(within(within(list).getByRole("radiogroup", { name: "Effort for Rewrite panel model 1" })).getAllByRole("radio").map((radio) => radio.getAttribute("value")))
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(within(list).queryByText(/is turned off/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Add profile" }));
-    const memberPicker = within(screen.getByRole("form", { name: /profile/i })).getAllByLabelText("Model")[0];
-    expect(within(memberPicker).getByRole("option", { name: "GPT-6 Luna (ChatGPT plan) - $0 marginal" })).toBeInTheDocument();
-    expect(within(memberPicker).queryByRole("option", { name: /Claude plan/ })).not.toBeInTheDocument();
+    const memberForm = screen.getByRole("form", { name: "Add an ensemble profile" });
+    await user.click(within(memberForm).getByRole("button", { name: "Add model" }));
+    const memberPicker = within(memberForm).getByRole("combobox", { name: "Profile model 1" });
+    expect(within(memberPicker).getByRole("option", { name: "GPT-6 Luna (ChatGPT plan) · plan" })).toBeInTheDocument();
+    expect(within(memberPicker).getByRole("option", { name: "Claude Sonnet (Claude plan) · plan · bridge off" })).toBeInTheDocument();
 
     await user.click(within(section).getByRole("checkbox", { name: "Use ChatGPT plan models" }));
     await waitFor(() => expect(onChange).toHaveBeenCalledTimes(3));
-    expect(within(picker).queryByRole("option", { name: /ChatGPT plan/ })).not.toBeInTheDocument();
-    expect(within(list).getByText(/bridge off/)).toBeInTheDocument();
+    expect(within(list).getByText(/ChatGPT plan via Codex CLI is turned off, so this model cannot run\. Turn it on under AI Models › Text models › Providers & keys › Subscription bridges/)).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Show Providers & keys" })).toBeInTheDocument();
   });
 
-  it("offers plan models in the Quick Polish picker only when enabled, with the latency note", async () => {
-    const user = userEvent.setup();
-    const onSettingsChange = vi.fn().mockResolvedValue(undefined);
-    const view = render(<SettingsView settings={settings()} hasKey onSettingsChange={onSettingsChange} onKeyStatusChange={vi.fn()} />);
-    await user.click(screen.getByRole("tab", { name: "Text Assist" }));
-    await waitFor(() => expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled());
-    expect(within(screen.getByRole("combobox", { name: "Model" })).queryByRole("option", { name: /Claude plan/ })).not.toBeInTheDocument();
+  it("summarizes a plan model for Quick Polish in Settings, with the latency and bridge notes", async () => {
+    const claudeOn = textAssistSettings({ cli: { ...off, claude: { enabled: true, path: null } }, quickModel: { provider: "claude_cli", model: "sonnet", effort: "medium" } });
+    const view = render(<SettingsView settings={settings({ textAssist: claudeOn })} hasKey onSettingsChange={vi.fn()} onKeyStatusChange={vi.fn()} />);
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Text Assist" }));
+    expect(await screen.findByText(/Claude Sonnet \(Claude plan\) · Medium effort · plan/)).toBeInTheDocument();
+    expect(screen.getByText(/Plan models take several seconds; not recommended for Quick Polish/)).toBeInTheDocument();
+    expect(screen.queryByText(/cannot run yet/)).not.toBeInTheDocument();
 
-    const claudeOn = textAssistSettings({ cli: { ...off, claude: { enabled: true, path: null } } });
-    view.rerender(<SettingsView settings={settings({ textAssist: claudeOn })} hasKey onSettingsChange={onSettingsChange} onKeyStatusChange={vi.fn()} />);
-    const picker = screen.getByRole("combobox", { name: "Model" });
-    await user.selectOptions(picker, within(picker).getByRole("option", { name: "Claude Sonnet (Claude plan) - $0 marginal" }));
-    await waitFor(() => expect(onSettingsChange).toHaveBeenCalledTimes(1));
-    const quickModel = (onSettingsChange.mock.lastCall![0] as { textAssist: TextAssistSettings }).textAssist.quickModel;
-    expect(quickModel).toEqual({ provider: "claude_cli", model: "sonnet", effort: "medium" });
-
-    view.rerender(<SettingsView settings={settings({ textAssist: { ...claudeOn, quickModel } })} hasKey onSettingsChange={onSettingsChange} onKeyStatusChange={vi.fn()} />);
-    expect(screen.getByText(/take several seconds; not recommended for Quick Polish/)).toBeInTheDocument();
-    expect(screen.getByText("Uses your Claude plan via Claude Code ($0 marginal)")).toBeInTheDocument();
-    expect(screen.queryByText(/needs an API key/)).not.toBeInTheDocument();
-
-    view.rerender(<SettingsView settings={settings({ textAssist: { ...claudeOn, cli: off, quickModel } })} hasKey onSettingsChange={onSettingsChange} onKeyStatusChange={vi.fn()} />);
-    expect(screen.getByRole("combobox", { name: "Model" })).toHaveDisplayValue("Claude Sonnet (Claude plan) (subscription bridge off)");
-    expect(screen.getByText(/that subscription bridge is off/)).toBeInTheDocument();
+    view.rerender(<SettingsView settings={settings({ textAssist: { ...claudeOn, cli: off } })} hasKey onSettingsChange={vi.fn()} onKeyStatusChange={vi.fn()} />);
+    expect(screen.getByText(/Quick Polish cannot run yet\. Claude plan via Claude Code is turned off/)).toBeInTheDocument();
   });
 });

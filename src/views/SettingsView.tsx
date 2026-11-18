@@ -17,6 +17,8 @@ type Props = {
   hasKey: boolean;
   onSettingsChange: SettingsChange;
   onKeyStatusChange: (hasKey: boolean) => void;
+  /** Opens AI Models on the Text models tab (Text Assist model choice lives there). */
+  onOpenTextModels?: () => void;
 };
 
 type SettingsTab = "general" | "textAssist" | "appearance";
@@ -50,7 +52,7 @@ const sttModels: Array<{ value: SttModel; label: string; hint: string }> = [
   },
 ];
 
-export function SettingsView({ settings, hasKey, onSettingsChange, onKeyStatusChange }: Props) {
+export function SettingsView({ settings, hasKey, onSettingsChange, onKeyStatusChange, onOpenTextModels }: Props) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const [draftKey, setDraftKey] = useState("");
   const [saving, setSaving] = useState(false);
@@ -132,7 +134,7 @@ export function SettingsView({ settings, hasKey, onSettingsChange, onKeyStatusCh
         </div>
       ) : tab === "textAssist" ? (
         <div role="tabpanel" id="settings-panel-textAssist" aria-labelledby="settings-tab-textAssist">
-          <TextAssistSettingsView settings={settings} hasKey={hasKey} onSettingsChange={onSettingsChange} />
+          <TextAssistSettingsView settings={settings} hasKey={hasKey} onSettingsChange={onSettingsChange} onOpenTextModels={onOpenTextModels} />
         </div>
       ) : (
       <div className="settings-stack" role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">

@@ -1,30 +1,26 @@
 import { useEffect, useId, useMemo, useState } from "react";
-import { Check } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import {
   PASTE_RESTORE_DELAY_MS,
   QUICK_MAX_CHARS,
-  catalogGroupLabel,
-  catalogOptionLabel,
-  effortForModel,
-  effortLabel,
-  findCatalogModel,
-  groupCatalogModels,
-  modelOptionValue,
+  fixableInProviders,
   isCliProvider,
-  modelRef,
-  needsBridge,
-  needsKey,
-  parseModelOptionValue,
-  providerLabel,
+  modelAccess,
+  modelAccessNote,
+  modelChoiceSummary,
+  modelColorFor,
   useTextAssistOverview,
   useTextProviderKeys,
 } from "../lib/textAssist";
-import type { AppSettings, Effort, SettingsChange, TextAssistSettings, TextProviderKind } from "../lib/types";
+import type { AppSettings, SettingsChange, TextAssistSettings } from "../lib/types";
+import "./text-models.css";
 
 type Props = {
   settings: AppSettings;
   hasKey: boolean;
   onSettingsChange: SettingsChange;
+  /** Opens AI Models › Text models, where Text Assist models are chosen. Without it, the view names the place. */
+  onOpenTextModels?: () => void;
 };
 
 /** Returns a validation message, or null when `draft` is a whole number within the range. */
@@ -39,7 +35,7 @@ export function validateLimit(draft: string, range: { min: number; max: number }
 
 const NO_KEY_ENDPOINTS: string[] = [];
 
-export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: Props) {
+export function TextAssistSettingsView({ settings, hasKey, onSettingsChange, onOpenTextModels }: Props) {
   const assist = settings.textAssist;
   const { overview, error: modelsError } = useTextAssistOverview();
   const { keys } = useTextProviderKeys(NO_KEY_ENDPOINTS);
@@ -54,13 +50,13 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
   useEffect(() => { setDelayDraft(String(assist.limits.pasteRestoreDelayMs)); }, [assist.limits.pasteRestoreDelayMs]);
 
   const models = useMemo(() => overview?.models ?? [], [overview]);
-  const groups = useMemo(() => groupCatalogModels(models, assist.cli), [models, assist.cli]);
   const quickModel = assist.quickModel;
-  const current = findCatalogModel(models, quickModel);
-  const offered = groups.some((group) => group.models.some((model) => model === current));
   // The OpenAI key status comes from App (it changes in Settings, General); the others from Credential Manager.
-  const missingKey = (provider: TextProviderKind) => (provider === "openai" ? !hasKey : needsKey({ provider }, keys));
-  const efforts: Effort[] = current ? current.efforts : quickModel.effort ? [quickModel.effort] : [];
+  const access = assist.devOfflineTransform ? "ok" : modelAccess(quickModel, keys, assist.cli, hasKey);
+  const accessNote = modelAccessNote(quickModel, access);
+  const profiles = assist.ensembleProfiles.length;
+  const panelSummary = `Rewrite panel: ${assist.favoriteModels.length} model${assist.favoriteModels.length === 1 ? "" : "s"}`
+    + ` · Ensembles: ${profiles === 0 ? "Favorites (automatic)" : `${profiles} profile${profiles === 1 ? "" : "s"}`}`;
 
   const quickMaxError = validateLimit(quickMaxDraft, QUICK_MAX_CHARS, "characters");
   const delayError = validateLimit(delayDraft, PASTE_RESTORE_DELAY_MS, "milliseconds");
@@ -81,13 +77,6 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
     }
   }
 
-  function selectModel(value: string) {
-    const parsed = parseModelOptionValue(value);
-    const model = parsed ? findCatalogModel(models, parsed) : null;
-    if (!model) return;
-    void save({ quickModel: modelRef(model.provider, model.id, effortForModel(model, quickModel.effort)) });
-  }
-
   function saveLimits() {
     if (quickMaxError || delayError || !limitsChanged) return;
     void save({
@@ -99,85 +88,58 @@ export function TextAssistSettingsView({ settings, hasKey, onSettingsChange }: P
     });
   }
 
-  const quickIsBridge = isCliProvider(quickModel.provider);
-  const quickBridgeOff = !assist.devOfflineTransform && needsBridge(quickModel, assist.cli);
-  const quickNeedsKey = !assist.devOfflineTransform && missingKey(quickModel.provider);
-  const quickHasKey = !quickIsBridge && (quickModel.provider === "openai" ? hasKey : keys ? !needsKey(quickModel, keys) : false);
-
   return (
     <div className="settings-stack">
       {message && <p className={`settings-feedback ${message.error ? "error-text" : "success-text"}`} role={message.error ? "alert" : "status"}>{message.text}</p>}
       {busy && <p className="settings-feedback" role="status">Saving settings...</p>}
 
       <section className="panel" aria-labelledby={`${ids}-title`}>
-        <div className="section-title">
-          <div>
-            <h3 id={`${ids}-title`}>Text Assist</h3>
-            <p>{quickIsBridge
-              ? `Uses your ${catalogGroupLabel(quickModel.provider)} ($0 marginal)`
-              : quickHasKey
-                ? `Uses the ${providerLabel(quickModel.provider)} key stored in Windows Credential Manager`
-                : `Requires a key for ${providerLabel(quickModel.provider)}`}</p>
-          </div>
-          {quickHasKey && <Check size={18} aria-hidden="true" />}
-        </div>
+        <h3 id={`${ids}-title`}>Text Assist</h3>
         <label className="toggle-row">
           <input type="checkbox" checked={assist.enabled} disabled={busy}
             onChange={(event) => void save({ enabled: event.target.checked })} />
           <span>Enable Text Assist</span>
         </label>
-        <p className="hint">
-          Select text in any app and tap <kbd>Shift</kbd>+<kbd>Win</kbd> to fix spelling, grammar and punctuation in place.
-          Hold <kbd>Shift</kbd>+<kbd>Win</kbd> for the Rewrite panel (coming soon).
-        </p>
-        {quickBridgeOff && (
-          <p className="warning-text ta-key-note">
-            Quick Polish uses a {providerLabel(quickModel.provider)} model, but that subscription bridge is off. Turn it on under AI Models, Text models, Subscription bridges, or choose another model.
-          </p>
-        )}
-        {quickNeedsKey && (
-          <p className="warning-text ta-key-note">
-            {quickModel.provider === "openai"
-              ? "Quick Polish needs an OpenAI API key. Add one under Settings, General, OpenAI key. The same key is used for dictation."
-              : `Quick Polish needs an API key for ${providerLabel(quickModel.provider)}. Add one under AI Models, Text models.`}
-          </p>
-        )}
+        <div className="hint ta-usage" id={`${ids}-usage`}>
+          <p><strong>Quick Polish:</strong> select text in any app and tap <kbd>Shift</kbd>+<kbd>Win</kbd> to fix spelling, grammar and punctuation in place.</p>
+          <p><strong>Rewrite panel:</strong></p>
+          <ol className="ta-steps" aria-label="Rewrite panel steps">
+            <li>Select text and hold <kbd>Shift</kbd>+<kbd>Win</kbd> to open the panel. Nothing is sent yet.</li>
+            <li>Pick a style and a model, or an ensemble.</li>
+            <li>Tap <kbd>Shift</kbd>+<kbd>Win</kbd> to start.</li>
+            <li>Press <kbd>Enter</kbd> to apply the result, or <kbd>Esc</kbd> to close.</li>
+          </ol>
+        </div>
       </section>
 
       <section className="panel" aria-labelledby={`${ids}-model-title`}>
-        <h3 id={`${ids}-model-title`}>Quick Polish</h3>
-        <label className="field">
-          <span>Model</span>
-          <select value={modelOptionValue(quickModel)} disabled={busy || models.length === 0}
-            aria-describedby={`${ids}-model-hint`}
-            onChange={(event) => selectModel(event.target.value)}>
-            {!current && <option value={modelOptionValue(quickModel)}>{quickModel.model}{overview ? " (not in the model list)" : ""}</option>}
-            {current && !offered && <option value={modelOptionValue(quickModel)}>{current.label} (subscription bridge off)</option>}
-            {groups.map((group) => (
-              <optgroup key={group.provider} label={catalogGroupLabel(group.provider)}>
-                {group.models.map((model) => (
-                  <option key={model.id} value={modelOptionValue({ provider: model.provider, model: model.id })}>
-                    {catalogOptionLabel(model, missingKey(model.provider))}{model.quickCandidate ? " (recommended)" : ""}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>Reasoning effort</span>
-          <select value={quickModel.effort ?? ""} disabled={busy || !current || efforts.length === 0}
-            onChange={(event) => void save({ quickModel: { ...quickModel, effort: event.target.value as Effort } })}>
-            {!quickModel.effort && <option value="">Model default</option>}
-            {efforts.map((effort) => <option key={effort} value={effort}>{effortLabel(effort)}</option>)}
-          </select>
-        </label>
-        <p className="hint" id={`${ids}-model-hint`}>
-          {!overview && !modelsError ? "Loading the model list..."
-            : current?.shutdown ? `${current.label} retires on ${current.shutdown}. Choose another model before then.`
-              : quickIsBridge ? "Plan models run through a command-line tool and take several seconds; not recommended for Quick Polish."
-              : "Recommended models are fast and inexpensive. Prices are provider list prices per million tokens. Lower effort answers faster; Quick Polish rarely needs more than low."}
+        <h3 id={`${ids}-model-title`}>Models</h3>
+        <div className="ta-model-summary">
+          <span className="ta-swatch" style={{ background: modelColorFor(quickModel, assist.modelColors, models) }} aria-hidden="true" />
+          <p className="ta-model-summary-text" id={`${ids}-quick-summary`}>
+            <strong>Quick Polish:</strong>{" "}
+            {!overview && !modelsError ? "Loading the model list..." : modelChoiceSummary(quickModel, models, assist.openaiCompatible)}
+            <span className="ta-model-summary-meta">{panelSummary}</span>
+          </p>
+          {onOpenTextModels && (
+            <button type="button" className="icon-button" aria-describedby={`${ids}-quick-summary`} onClick={onOpenTextModels}>
+              Choose models <ArrowRight size={15} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+        <p className="hint ta-key-note">
+          {onOpenTextModels ? "Models and efforts for Quick Polish, the Rewrite panel and ensembles are chosen in AI Models › Text models."
+            : "Choose models and efforts for Quick Polish, the Rewrite panel and ensembles in AI Models › Text models."}
+          {isCliProvider(quickModel.provider) && " Plan models take several seconds; not recommended for Quick Polish."}
         </p>
+        {accessNote && (
+          <p className="warning-text ta-access-note" role="note">
+            <span>Quick Polish cannot run yet. {accessNote}</span>
+            {onOpenTextModels && fixableInProviders(quickModel, access) && (
+              <button type="button" className="icon-button ta-link-button" onClick={onOpenTextModels}>Open AI Models</button>
+            )}
+          </p>
+        )}
         {modelsError && <p className="error-text" role="alert">Could not load the model list: {modelsError}</p>}
       </section>
 

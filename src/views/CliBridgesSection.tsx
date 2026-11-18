@@ -44,7 +44,7 @@ export function CliBridgesSection({ assist, busy, save, feedback }: Props) {
         Vellora starts your own signed-in CLI in an empty temporary folder and sends only the selected text on standard input.
         It never reads or stores your login. Plan limits and the provider's terms apply; for personal use only.
       </p>
-      <p className="hint">Runs take several seconds; not recommended for Quick Polish. Plan models cost $0 marginal and appear in the model pickers only while their bridge is on.</p>
+      <p className="hint">Runs take several seconds; not recommended for Quick Polish. Plan models cost $0 marginal. The model pickers always list them; while a bridge is off they are marked "bridge off" and do not run.</p>
       <p className="visually-hidden" role="status">{loading ? "Checking the command-line tools. This can take up to 20 seconds." : ""}</p>
       {error && <p className="error-text" role="alert">Could not check the command-line tools: {error}</p>}
       <FeedbackLine feedback={feedback} />
