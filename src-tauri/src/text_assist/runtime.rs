@@ -369,7 +369,8 @@ impl Runtime {
             match event {
                 None => {
                     if let Some((press_id, _)) = pending_hold.take() {
-                        if assist_chord::hold_reached(press_id, Instant::now()) {
+                        let reached = assist_chord::hold_reached(press_id, Instant::now());
+                        if show_cue(reached, panel::is_open(&self)) {
                             self.show_hold_cue();
                             cue = Some(press_id);
                         }
@@ -384,18 +385,26 @@ impl Runtime {
                 Some(AssistChordEvent::Cancelled { press_id }) => {
                     pending_hold = None;
                     if cue.take() == Some(press_id) {
-                        self.halo.hide_now();
+                        end_hold_cue(&self.halo, true);
                     }
                 }
+                // While the Rewrite panel is open, Shift+Win starts its current choice instead
+                // of Quick Polish or a new panel (the foreground is the panel itself).
                 Some(AssistChordEvent::Tap { .. }) => {
                     pending_hold = None;
-                    cue = None;
-                    self.on_tap();
+                    if cue.take().is_some() {
+                        end_hold_cue(&self.halo, true);
+                    }
+                    if !panel::on_chord(&self, false) {
+                        self.on_tap();
+                    }
                 }
                 Some(AssistChordEvent::Hold { .. }) => {
                     pending_hold = None;
-                    cue = None;
-                    if (self.settings)().text_assist.enabled {
+                    if cue.take().is_some() {
+                        end_hold_cue(&self.halo, true);
+                    }
+                    if !panel::on_chord(&self, true) && (self.settings)().text_assist.enabled {
                         panel::open(&self);
                     }
                 }
@@ -428,11 +437,21 @@ impl Runtime {
         let halo = self.halo.clone();
         let settings = (self.settings)();
         let color = model_color(&settings, &settings.text_assist.quick_model);
+        let ticket = {
+            let mut current = CUE_TICKET.lock().unwrap();
+            *current += 1;
+            *current
+        };
         thread::spawn(move || {
             let hwnd = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+            // The geometry lookup can take up to about a second; the chord may end meanwhile.
             let (anchor, _) = geometry::inspect_target(hwnd.0 as isize);
             let layout = layout_for(&anchor);
-            halo.show(
+            let current = CUE_TICKET.lock().unwrap();
+            if *current != ticket {
+                return;
+            }
+            let generation = halo.show(
                 &layout,
                 HaloPayload {
                     job_id: String::new(),
@@ -448,6 +467,9 @@ impl Runtime {
                     scale: layout.scale,
                 },
             );
+            // Safety net: a cue never outlives a very long hold.
+            halo.hide_later(generation, HOLD_CUE_TIMEOUT);
+            drop(current);
         });
     }
 
@@ -455,10 +477,9 @@ impl Runtime {
         let mut active = self.active.lock().unwrap();
         if let Some(job) = active.as_ref() {
             if job.phase.get().is_none_or(|phase| !phase.is_final()) {
-                // A tap during a job cancels it, except while pasting (spec 3.4).
-                if job.phase.cancellable() {
-                    job.cancel.cancel();
-                }
+                // A tap during a job cancels it, except while pasting (spec 3.4). The phase
+                // cell decides this atomically with the job's switch to pasting.
+                job.phase.try_cancel(&job.cancel);
                 return;
             }
         }
@@ -512,12 +533,47 @@ impl Runtime {
     }
 }
 
+/// The hold cue ring shows once the hold threshold is reached, but never while the panel is
+/// open (a chord there starts the panel's run instead of opening a new panel).
+fn show_cue(hold_reached: bool, panel_open: bool) -> bool {
+    hold_reached && !panel_open
+}
+
+/// Hold-cue tickets. A cue is shown only while its ticket is current (checked under this lock),
+/// and every chord outcome advances the ticket, so a slow geometry lookup can never show the
+/// cue after the chord ended.
+static CUE_TICKET: Mutex<u64> = Mutex::new(0);
+/// The longest a hold cue stays visible.
+const HOLD_CUE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ends the current hold cue: a cue still being prepared is never shown, and `hide` hides one
+/// already visible.
+fn end_hold_cue(halo: &Halo, hide: bool) {
+    let mut current = CUE_TICKET.lock().unwrap();
+    *current += 1;
+    if hide {
+        halo.hide_now();
+    }
+}
+
 static LAST_KEPT: std::sync::OnceLock<Arc<Mutex<Option<TextAssistRun>>>> =
     std::sync::OnceLock::new();
 
 /// The latest result that was kept instead of pasted (also when history is off).
 pub fn last_kept_result() -> Option<TextAssistRun> {
     LAST_KEPT.get()?.lock().unwrap().clone()
+}
+
+/// Forgets the kept result when its run is deleted (`Some(id)`) or all runs are cleared
+/// (`None`), so deleted text does not come back through the "last kept result" banner.
+pub fn forget_kept(run_id: Option<&str>) {
+    let Some(last_kept) = LAST_KEPT.get() else {
+        return;
+    };
+    let mut last_kept = last_kept.lock().unwrap();
+    if run_id.is_none_or(|id| last_kept.as_ref().is_some_and(|run| run.id == id)) {
+        *last_kept = None;
+    }
 }
 
 /// Applies chord-related settings (enabled, hold threshold).
@@ -572,4 +628,51 @@ pub fn start(
         .name("text-assist".to_string())
         .spawn(move || runtime.run(receiver))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_a_kept_run_forgets_it() {
+        let last_kept = LAST_KEPT.get_or_init(|| Arc::new(Mutex::new(None)));
+        let kept = |id: &str| TextAssistRun {
+            id: id.to_string(),
+            created_at: String::new(),
+            kind: "polish".to_string(),
+            preset_id: None,
+            ensemble_run_id: None,
+            provider: "openai".to_string(),
+            model: "m".to_string(),
+            effort: None,
+            billing: "api".to_string(),
+            original_text: "synthetic".to_string(),
+            result_text: Some("Synthetic".to_string()),
+            outcome: "kept".to_string(),
+            reason_code: None,
+            target_app: None,
+            duration_ms: None,
+            first_token_ms: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost_usd: None,
+        };
+        *last_kept.lock().unwrap() = Some(kept("a"));
+        forget_kept(Some("b"));
+        assert!(last_kept_result().is_some_and(|run| run.id == "a"));
+        forget_kept(Some("a"));
+        assert!(last_kept_result().is_none());
+        *last_kept.lock().unwrap() = Some(kept("c"));
+        forget_kept(None);
+        assert!(last_kept_result().is_none());
+    }
+
+    #[test]
+    fn hold_cue_waits_for_the_threshold_and_never_shows_over_the_panel() {
+        assert!(show_cue(true, false));
+        assert!(!show_cue(false, false));
+        assert!(!show_cue(true, true));
+        assert!(!show_cue(false, true));
+    }
 }

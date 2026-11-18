@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "assist-panel",
+  "description": "The Rewrite panel can be moved by dragging its header (data-tauri-drag-region).",
+  "windows": ["assist-panel"],
+  "local": true,
+  "permissions": ["core:window:allow-start-dragging"]
+}

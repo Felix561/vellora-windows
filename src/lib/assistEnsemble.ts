@@ -2,6 +2,7 @@
 import { useCallback, useRef, useState, type MutableRefObject } from "react";
 import {
   MAX_ENSEMBLE_MEMBERS,
+  isCustomPreset,
   normalizeEnsemblePreview,
   panelEnsemblePreview,
   panelRunEnsemble,
@@ -11,12 +12,20 @@ import {
   type PanelResult,
 } from "./assistPanel";
 
+/** "single": one model; "preview": ensemble setup (profile, members, cost); "cards": a run. */
 export type PanelMode = "single" | "preview" | "cards";
 
+/** The profile, preset and instruction a preview was estimated for. */
+export type PreviewSpec = {
+  profileId: string;
+  presetId: string;
+  customInstruction: string | null;
+};
+
 export type PreviewState =
-  | { status: "loading"; profileId: string }
-  | { status: "ready"; profileId: string; preview: EnsemblePreview }
-  | { status: "error"; profileId: string; error: string };
+  | (PreviewSpec & { status: "loading" })
+  | (PreviewSpec & { status: "ready"; preview: EnsemblePreview })
+  | (PreviewSpec & { status: "error"; error: string });
 
 /** What an ensemble run (and its re-run) uses. */
 export type EnsembleSpec = {
@@ -35,8 +44,16 @@ export type EnsembleRun = EnsembleSpec & {
   error: string | null;
 };
 
+/** Whether the current ensemble choice may start, and why not. */
+export type EnsembleGate =
+  | { ok: true; preview: EnsemblePreview }
+  /** `stale`: the preview was estimated for another choice; load it again first. */
+  | { ok: false; reason: string; stale: boolean };
+
 /** At most this many runs' early events are buffered while the run id is still unknown. */
 const MAX_BUFFERED_RUNS = 8;
+
+export const CUSTOM_NEEDS_INSTRUCTION = "Type an instruction above, then press Enter";
 
 function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
@@ -56,10 +73,36 @@ export function finishedCount(results: Record<number, PanelResult>) {
   return Object.values(results).filter((result) => result.phase === "done" || result.phase === "failed" || result.phase === "cancelled").length;
 }
 
+/** A run that started and still has members without a final phase. */
+export function isEnsembleRunning(run: EnsembleRun | null, results: Record<number, PanelResult>) {
+  return !!run && !run.error && finishedCount(results) < cardCount(run, results);
+}
+
 /**
- * Ensemble mode of the panel. Member events (`ensembleRunId` + `memberIndex`) are routed here by
- * `handleResult`; events of other runs or sessions are ignored. Events that arrive before
- * `panel_run_ensemble` returns the run id are buffered and adopted once it is known.
+ * Fails closed: only a ready, unblocked preview for exactly this profile, preset and instruction
+ * lets the ensemble start (the backend checks the cost limit again).
+ */
+export function ensembleGate(state: PreviewState | null, choice: PreviewSpec): EnsembleGate {
+  if (
+    !state
+    || state.profileId !== choice.profileId
+    || state.presetId !== choice.presetId
+    || state.customInstruction !== choice.customInstruction
+  ) {
+    return { ok: false, reason: "Checking the cost first. Press Shift+Win again to start.", stale: true };
+  }
+  if (state.status === "loading") return { ok: false, reason: "Still estimating the cost", stale: false };
+  if (state.status === "error") return { ok: false, reason: state.error, stale: false };
+  if (state.preview.blocked) return { ok: false, reason: "Over the cost limit. This ensemble cannot start.", stale: false };
+  if (state.preview.members.length === 0) return { ok: false, reason: "This ensemble profile has no models", stale: false };
+  return { ok: true, preview: state.preview };
+}
+
+/**
+ * Ensemble mode of the panel. Opening it only loads the preview (members and cost); a run starts
+ * with `start`. Member events (`ensembleRunId` + `memberIndex`) are routed here by `handleResult`;
+ * events of other runs or sessions are ignored. Events that arrive before `panel_run_ensemble`
+ * returns the run id are buffered and adopted once it is known.
  */
 export function useEnsemble(sessionRef: MutableRefObject<string | null>) {
   const [mode, setMode] = useState<PanelMode>("single");
@@ -70,7 +113,7 @@ export function useEnsemble(sessionRef: MutableRefObject<string | null>) {
   const [selected, setSelected] = useState(0);
   const [showDiff, setShowDiff] = useState(false);
 
-  /** Preset and instruction captured when the preview opened. */
+  /** Preset and instruction the preview is estimated for. */
   const specRef = useRef<{ presetId: string; customInstruction: string | null } | null>(null);
   const previewToken = useRef(0);
   const runToken = useRef(0);
@@ -96,23 +139,31 @@ export function useEnsemble(sessionRef: MutableRefObject<string | null>) {
     const spec = specRef.current;
     if (!session || !spec) return;
     const token = ++previewToken.current;
+    const full: PreviewSpec = { profileId: id, ...spec };
     setProfileId(id);
-    setPreview({ status: "loading", profileId: id });
+    if (isCustomPreset(spec.presetId) && !spec.customInstruction) {
+      setPreview({ ...full, status: "error", error: CUSTOM_NEEDS_INSTRUCTION });
+      return;
+    }
+    setPreview({ ...full, status: "loading" });
     panelEnsemblePreview({ profileId: id, presetId: spec.presetId, customInstruction: spec.customInstruction })
       .then((raw) => {
         if (token !== previewToken.current || sessionRef.current !== session) return;
         const value = normalizeEnsemblePreview(raw);
         setPreview(value
-          ? { status: "ready", profileId: id, preview: value }
-          : { status: "error", profileId: id, error: "The cost estimate is unavailable" });
+          ? { ...full, status: "ready", preview: value }
+          : { ...full, status: "error", error: "The cost estimate is unavailable" });
       })
       .catch((error: unknown) => {
         if (token !== previewToken.current || sessionRef.current !== session) return;
-        setPreview({ status: "error", profileId: id, error: errorMessage(error) });
+        setPreview({ ...full, status: "error", error: errorMessage(error) });
       });
   }, [sessionRef]);
 
-  /** Opens the preview for `presetId`; keeps the last chosen profile when it still exists. */
+  /**
+   * Shows the ensemble setup for `presetId` (also to refresh it after the preset or instruction
+   * changed); keeps the last chosen profile when it still exists. Never starts a run.
+   */
   const open = useCallback((profiles: readonly PanelEnsembleProfile[], presetId: string, customInstruction: string | null) => {
     if (profiles.length === 0) return;
     specRef.current = { presetId, customInstruction };
@@ -148,22 +199,6 @@ export function useEnsemble(sessionRef: MutableRefObject<string | null>) {
         setRun((current) => (current?.token === token ? { ...current, error: errorMessage(error) } : current));
       });
   }, [sessionRef]);
-
-  /** Starts the previewed profile; false when the preview is not ready or blocked. */
-  const confirm = useCallback((profiles: readonly PanelEnsembleProfile[]) => {
-    const spec = specRef.current;
-    if (!spec || preview?.status !== "ready" || preview.preview.blocked || preview.profileId !== profileId) return false;
-    if (preview.preview.members.length === 0) return false;
-    const profile = profiles.find((item) => item.id === profileId);
-    start({
-      profileId,
-      profileName: profile?.name ?? profileId,
-      presetId: spec.presetId,
-      customInstruction: spec.customInstruction,
-      members: preview.preview.members,
-    });
-    return true;
-  }, [preview, profileId, start]);
 
   /** Runs the same profile, preset and instruction again (fresh requests). */
   const rerun = useCallback(() => {
@@ -212,7 +247,7 @@ export function useEnsemble(sessionRef: MutableRefObject<string | null>) {
     reset,
     open,
     selectProfile: loadPreview,
-    confirm,
+    start,
     rerun,
     handleResult,
   };

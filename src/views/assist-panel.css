@@ -398,6 +398,99 @@ button.ap-hint[aria-pressed="true"] {
   font-weight: 600;
 }
 
+/* Setup (nothing sent yet): model chips, ensemble toggle, the selection and Start. */
+.ap-root [data-tauri-drag-region] {
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ap-ens-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 12px 0;
+}
+
+.ap-ens-row .ap-profile-chips {
+  flex: 1 1 auto;
+  padding: 0;
+}
+
+.ap-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ap-model-chip .ap-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.ap-model-chip.on .ap-effort {
+  color: var(--paper);
+}
+
+.ap-ens-toggle {
+  flex: none;
+}
+
+.ap-setup {
+  display: grid;
+  gap: 4px;
+}
+
+.ap-original {
+  color: var(--ink-soft);
+}
+
+.ap-original-mini {
+  display: -webkit-box;
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.ap-start {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid var(--ink);
+  border-radius: 6px;
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.ap-notice + .ap-start {
+  margin-left: 0;
+}
+
+.ap-start:hover:not(:disabled) {
+  background: var(--clay-dark);
+  border-color: var(--clay-dark);
+}
+
+.ap-start:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.ap-root .ap-start kbd {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.16);
+  color: inherit;
+}
+
 /* Ensemble (E): title, profile picker, preview and cards (concept scene C). */
 .ap-ens-title {
   display: flex;
@@ -714,6 +807,28 @@ button.ap-hint[aria-pressed="true"] {
   border: 2px inset #eee;
   border-radius: 0;
   background: #fff;
+}
+
+[data-appearance="classic"] .ap-start {
+  border: 2px outset #eee;
+  border-radius: 0;
+  background: #000080;
+  color: #fff;
+}
+
+[data-appearance="classic"] .ap-start:hover:not(:disabled) {
+  background: #000080;
+  border-color: #eee;
+}
+
+[data-appearance="classic"] .ap-start:active:not(:disabled) {
+  border-style: inset;
+}
+
+[data-appearance="classic"] .ap-root .ap-start kbd {
+  border: 1px solid #c0c0c0;
+  background: transparent;
+  color: #fff;
 }
 
 /* Reduced motion: no pop, spin or blinking caret. */

@@ -1,6 +1,8 @@
 //! Rewrite panel (spec 2.2, M4). Holding Shift+Win captures the selection and opens a focusable
-//! panel next to it. Presets stream results into the panel; Apply hands focus back to the editor,
-//! re-copies to verify the selection is unchanged and replaces it.
+//! panel next to it in a setup state; nothing is sent until the user starts. While the panel is
+//! open, Shift+Win (tap or hold) is routed to it ([`on_chord`]) and starts the chosen preset with
+//! the chosen model or ensemble. Apply hands focus back to the editor, re-copies to verify the
+//! selection is unchanged and replaces it.
 
 use std::{
     collections::HashMap,
@@ -14,7 +16,7 @@ use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 use super::{
     geometry::{self, Anchor, PointPx, RectPx},
-    guard::{self, PreparedSelection},
+    guard::{self, GuardIssue, PreparedSelection},
     job::{self, JobPlatform, Phase},
     platform::{self, TargetSnapshot, WindowsPlatform},
     prompts,
@@ -36,6 +38,8 @@ use crate::{
 pub const PANEL_WINDOW: &str = "assist-panel";
 pub const PANEL_OPEN_EVENT: &str = "text-assist-panel-open";
 pub const PANEL_EVENT: &str = "text-assist-panel";
+/// Shift+Win while a panel session is open; the panel starts its current choice.
+pub const PANEL_CHORD_EVENT: &str = "text-assist-panel-chord";
 /// Panel request budget (spec 3.4).
 pub const PANEL_TIMEOUT: Duration = Duration::from_secs(90);
 /// Panel size in logical (96 DPI) pixels; matches `tauri.conf.json`.
@@ -124,6 +128,15 @@ pub struct PanelResult {
     pub ensemble_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member_index: Option<usize>,
+}
+
+/// Payload of [`PANEL_CHORD_EVENT`]; mirrors `PanelChord` in `src/lib/assistPanel.ts`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanelChord {
+    pub session_id: String,
+    /// "tap" or "hold"; the panel treats both as Start.
+    pub kind: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +329,7 @@ pub(crate) fn open(rt: &Arc<Runtime>) {
     let target = match platform.snapshot() {
         Ok(target) => target,
         Err(failure) => {
+            record_open_failure(rt, &settings, failure.code, None);
             rt.show_status(None, Phase::Failed, "rewrite", "#8a8f98", &failure.message);
             return;
         }
@@ -324,6 +338,7 @@ pub(crate) fn open(rt: &Arc<Runtime>) {
     let original = match platform.capture(&target, limit) {
         Ok(text) => text,
         Err(failure) => {
+            record_open_failure(rt, &settings, failure.code, target.exe_name.clone());
             rt.show_status(
                 Some(&target.anchor),
                 Phase::Failed,
@@ -412,6 +427,72 @@ fn show_panel_window(rt: &Runtime, anchor: &Anchor) {
     let _ = window.set_focus();
 }
 
+/// What a Shift+Win chord does with respect to the panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChordRoute {
+    /// A session is open and its window is shown: the panel handles the chord.
+    Panel,
+    /// A session exists but its window is gone or hidden: drop it, then handle normally.
+    DropStale,
+    /// No session: Quick Polish (tap) or open the panel (hold).
+    Default,
+}
+
+pub(crate) fn route_chord(session_open: bool, window_visible: bool) -> ChordRoute {
+    match (session_open, window_visible) {
+        (true, true) => ChordRoute::Panel,
+        (true, false) => ChordRoute::DropStale,
+        (false, _) => ChordRoute::Default,
+    }
+}
+
+fn window_visible(rt: &Runtime) -> bool {
+    rt.halo
+        .app
+        .get_webview_window(PANEL_WINDOW)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
+/// True while a panel session is open and its window is shown (no hold cue then).
+pub(crate) fn is_open(rt: &Runtime) -> bool {
+    let session_open = SESSION.lock().unwrap().is_some();
+    session_open && window_visible(rt)
+}
+
+/// Routes Shift+Win to an open panel session: emits [`PANEL_CHORD_EVENT`] (the panel starts its
+/// current choice) and brings the panel to the front without moving it. Returns false when no
+/// session is open, so the caller runs Quick Polish or opens the panel as usual.
+pub(crate) fn on_chord(rt: &Runtime, hold: bool) -> bool {
+    let session_id = SESSION
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|session| session.init.session_id.clone());
+    let visible = session_id.is_some() && window_visible(rt);
+    match (route_chord(session_id.is_some(), visible), session_id) {
+        (ChordRoute::Panel, Some(session_id)) => {
+            if let Some(window) = rt.halo.app.get_webview_window(PANEL_WINDOW) {
+                if !window.is_focused().unwrap_or(false) {
+                    let _ = clipboard_snapshot::send_foreground_unlock();
+                    let _ = window.set_focus();
+                }
+            }
+            let chord = PanelChord {
+                session_id,
+                kind: if hold { "hold" } else { "tap" },
+            };
+            let _ = rt.halo.app.emit_to(PANEL_WINDOW, PANEL_CHORD_EVENT, &chord);
+            true
+        }
+        (ChordRoute::DropStale, _) => {
+            close_session(rt, false);
+            false
+        }
+        _ => false,
+    }
+}
+
 fn hide_panel_window(rt: &Runtime) {
     if let Some(window) = rt.halo.app.get_webview_window(PANEL_WINDOW) {
         let _ = window.hide();
@@ -469,6 +550,56 @@ fn record(rt: &Runtime, job: &PanelJob, run: TextAssistRun) -> Option<String> {
     Some(id)
 }
 
+/// A panel open that captured no selection gets a text-free history row (reason and app
+/// only), like a failed Quick Polish, so statistics show where the panel could not start.
+fn open_failure_row(
+    settings: &AppSettings,
+    code: &str,
+    target_app: Option<String>,
+) -> TextAssistRun {
+    let assist = &settings.text_assist;
+    let model = panel_models(settings)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| assist.quick_model.clone());
+    TextAssistRun {
+        id: uuid::Uuid::new_v4().to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        kind: KIND_REWRITE.to_string(),
+        preset_id: Some(assist.last_preset_id.clone()),
+        ensemble_run_id: None,
+        provider: model.provider.as_str().to_string(),
+        model: model.model.clone(),
+        effort: model.effort.map(|effort| effort.as_str().to_string()),
+        billing: model.provider.billing().as_str().to_string(),
+        original_text: String::new(),
+        result_text: None,
+        outcome: OUTCOME_FAILED.to_string(),
+        reason_code: Some(code.to_string()),
+        target_app,
+        duration_ms: None,
+        first_token_ms: None,
+        input_tokens: None,
+        output_tokens: None,
+        estimated_cost_usd: None,
+    }
+}
+
+fn record_open_failure(rt: &Runtime, settings: &AppSettings, code: &str, target: Option<String>) {
+    if !settings.text_assist.save_history {
+        return;
+    }
+    let run = open_failure_row(settings, code, target);
+    if let Err(err) = history::insert_text_assist_run(&run) {
+        eprintln!("Could not save Text Assist history: {err:#}");
+        return;
+    }
+    let _ = rt
+        .halo
+        .app
+        .emit_to("main", runtime::RUN_RECORDED_EVENT, &run.id);
+}
+
 fn history_row(
     job: &PanelJob,
     result: Option<String>,
@@ -499,6 +630,19 @@ fn history_row(
         output_tokens: usage.map(|usage| usage.output_tokens),
         estimated_cost_usd: usage.and_then(|usage| catalog::estimate_cost_usd(&job.model, &usage)),
     }
+}
+
+/// Rewrites (Clearer, Academic, Professional, Custom) change a lot by design, so only Polish
+/// keeps the change-size warnings. Used for the panel's warnings and its history reason code.
+pub(crate) fn panel_issues(preset_id: &str, issues: &[GuardIssue]) -> Vec<GuardIssue> {
+    issues
+        .iter()
+        .copied()
+        .filter(|issue| {
+            preset_id == prompts::PRESET_POLISH
+                || !matches!(issue, GuardIssue::TooManyChanges | GuardIssue::LengthChange)
+        })
+        .collect()
 }
 
 fn store(job: &PanelJob, result: &PanelResult, run_id: Option<String>) {
@@ -573,6 +717,7 @@ async fn run_request(rt: Arc<Runtime>, job: PanelJob, cancel: CancelToken) {
             let completed = outcome.finish == FinishReason::Completed;
             let restored = guard::restore(&job.prepared, &outcome.text);
             let report = guard::check(&job.prepared.core, outcome.text.trim(), completed);
+            let issues = panel_issues(&job.preset_id, &report.issues);
             let cost = outcome
                 .usage
                 .and_then(|usage| catalog::estimate_cost_usd(&job.model, &usage));
@@ -582,11 +727,7 @@ async fn run_request(rt: Arc<Runtime>, job: PanelJob, cancel: CancelToken) {
                 text: restored.clone(),
                 duration_ms,
                 cost_usd: cost,
-                warnings: report
-                    .issues
-                    .iter()
-                    .map(|issue| issue.reason_code())
-                    .collect(),
+                warnings: issues.iter().map(|issue| issue.reason_code()).collect(),
                 error: (!usable).then(|| "Output incomplete".to_string()),
                 ..job.base.clone()
             };
@@ -594,7 +735,7 @@ async fn run_request(rt: Arc<Runtime>, job: PanelJob, cancel: CancelToken) {
                 &job,
                 Some(restored),
                 if usable { OUTCOME_KEPT } else { OUTCOME_FAILED },
-                report.reason_code(),
+                issues.first().map(|issue| issue.reason_code()),
                 started,
                 outcome.usage,
                 outcome.first_token_ms,
@@ -1057,6 +1198,25 @@ mod tests {
     use super::*;
     use crate::text_assist::geometry::AnchorKind;
 
+    #[test]
+    fn a_failed_open_records_reason_and_app_but_no_text() {
+        let settings = AppSettings::default();
+        let run = open_failure_row(&settings, "no_selection", Some("WINWORD.EXE".to_string()));
+        assert_eq!(run.kind, KIND_REWRITE);
+        assert_eq!(run.outcome, OUTCOME_FAILED);
+        assert_eq!(run.reason_code.as_deref(), Some("no_selection"));
+        assert_eq!(run.target_app.as_deref(), Some("WINWORD.EXE"));
+        assert_eq!(run.original_text, "");
+        assert_eq!(run.result_text, None);
+        assert_eq!(run.estimated_cost_usd, None);
+        // The panel's first model is recorded, as for a run.
+        let first = panel_models(&settings).into_iter().next().unwrap();
+        assert_eq!(
+            (run.provider.as_str(), run.model.as_str()),
+            (first.provider.as_str(), first.model.as_str())
+        );
+    }
+
     fn anchor(x: i32, y: i32, width: i32, height: i32) -> Anchor {
         Anchor {
             kind: AnchorKind::Selection,
@@ -1151,6 +1311,54 @@ mod tests {
             crate::text_providers::cli_common::CLI_TIMEOUT
         );
         assert_eq!(runtime::request_timeout(&api, PANEL_TIMEOUT), PANEL_TIMEOUT);
+    }
+
+    #[test]
+    fn chords_go_to_an_open_panel_and_stale_sessions_are_dropped() {
+        assert_eq!(route_chord(true, true), ChordRoute::Panel);
+        assert_eq!(route_chord(true, false), ChordRoute::DropStale);
+        assert_eq!(route_chord(false, true), ChordRoute::Default);
+        assert_eq!(route_chord(false, false), ChordRoute::Default);
+    }
+
+    #[test]
+    fn rewrites_drop_change_size_warnings_but_polish_keeps_them() {
+        let all = [
+            GuardIssue::TooManyChanges,
+            GuardIssue::ProtectedTokens,
+            GuardIssue::LengthChange,
+            GuardIssue::LineCount,
+            GuardIssue::Preamble,
+            GuardIssue::Incomplete,
+        ];
+        assert_eq!(panel_issues(prompts::PRESET_POLISH, &all), all.to_vec());
+        for preset in [
+            prompts::PRESET_CLEARER,
+            prompts::PRESET_ACADEMIC,
+            prompts::PRESET_PROFESSIONAL,
+            prompts::PRESET_CUSTOM,
+            "user-preset",
+        ] {
+            assert_eq!(
+                panel_issues(preset, &all),
+                vec![
+                    GuardIssue::ProtectedTokens,
+                    GuardIssue::LineCount,
+                    GuardIssue::Preamble,
+                    GuardIssue::Incomplete,
+                ],
+                "{preset}"
+            );
+        }
+        // The history reason code is the first remaining issue, or none.
+        let size_only = [GuardIssue::TooManyChanges, GuardIssue::LengthChange];
+        assert!(panel_issues(prompts::PRESET_ACADEMIC, &size_only).is_empty());
+        assert_eq!(
+            panel_issues(prompts::PRESET_POLISH, &size_only)
+                .first()
+                .map(|issue| issue.reason_code()),
+            Some("guard_too_many_changes")
+        );
     }
 
     #[test]

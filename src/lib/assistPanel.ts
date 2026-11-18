@@ -5,6 +5,8 @@ import type { Appearance } from "./types";
 export const PANEL_WINDOW_LABEL = "assist-panel";
 export const PANEL_OPEN_EVENT = "text-assist-panel-open";
 export const PANEL_RESULT_EVENT = "text-assist-panel";
+/** Shift+Win while the panel is open (Rust `PANEL_CHORD_EVENT`): start the current choice. */
+export const PANEL_CHORD_EVENT = "text-assist-panel-chord";
 
 /** Id of the built-in Custom… preset (Rust `prompts::PRESET_CUSTOM`). */
 export const CUSTOM_PRESET_ID = "custom";
@@ -92,6 +94,9 @@ export type PanelResult = {
   memberIndex?: number;
 };
 
+/** Shift+Win routed to the open panel (Rust `PanelChord`); tap and hold both start. */
+export type PanelChord = { sessionId: string; kind: "tap" | "hold" };
+
 export type PanelRunArgs = {
   presetId: string;
   modelIndex: number;
@@ -173,6 +178,7 @@ const warningTexts: Record<string, string> = {
   guard_too_many_changes: "Large change",
   guard_length: "Length changed a lot",
   guard_line_count: "Line breaks changed",
+  guard_whitespace: "Indentation or spacing changed",
   guard_preamble: "Model added extra text",
   guard_wrapper: "Model added extra text",
   guard_incomplete: "Output incomplete",
@@ -336,6 +342,20 @@ function ensembleFields(p: Record<string, unknown>): Pick<PanelResult, "ensemble
   const member = num(p.memberIndex);
   if (!runId || member === null || member < 0 || !Number.isInteger(member)) return {};
   return { ensembleRunId: runId, memberIndex: member };
+}
+
+/** Validates an untrusted chord event; null when it is unusable. */
+export function normalizePanelChord(raw: unknown): PanelChord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const p = raw as Record<string, unknown>;
+  const sessionId = str(p.sessionId);
+  if (!sessionId) return null;
+  return { sessionId, kind: p.kind === "hold" ? "hold" : "tap" };
+}
+
+/** A request that is still waiting for, or receiving, its answer. */
+export function isRunningPhase(phase: PanelPhase | null | undefined) {
+  return phase === "thinking" || phase === "streaming";
 }
 
 /** Validates an untrusted preview; null when it is unusable. */

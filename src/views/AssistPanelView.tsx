@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Loader2, X } from "lucide-react";
 import { useAppearance } from "../lib/appearance";
 import {
+  PANEL_CHORD_EVENT,
   PANEL_OPEN_EVENT,
   PANEL_RESULT_EVENT,
   billingLabel,
@@ -12,7 +13,9 @@ import {
   friendlyWarnings,
   getPanelInit,
   isCustomPreset,
+  isRunningPhase,
   nextModelIndex,
+  normalizePanelChord,
   normalizePanelInit,
   normalizePanelResult,
   panelApply,
@@ -26,16 +29,19 @@ import {
   targetAppName,
   cardKeyRange,
   CUSTOM_INSTRUCTION_MAX_CHARS,
-  type EnsemblePreview,
   type PanelInit,
   type PanelResult,
 } from "../lib/assistPanel";
 import { wordDiff, type DiffPart } from "../lib/wordDiff";
-import { cardCount, finishedCount, useEnsemble, type PreviewState } from "../lib/assistEnsemble";
+import { cardCount, ensembleGate, finishedCount, isEnsembleRunning, useEnsemble, type EnsembleGate, type PreviewState } from "../lib/assistEnsemble";
 import { EnsembleCards, EnsemblePreviewView, ProfileChips, ResultText, WarningList } from "./AssistEnsembleView";
 import "./assist-panel.css";
 
 const NOTICE_MS = 2500;
+/** A tap of Shift+Win while the shown request is still running does nothing. */
+const RUNNING_NOTICE = "Already running. Wait for the result, or press Esc to close.";
+/** Win is `Meta` in `aria-keyshortcuts`. */
+const START_KEYS = "Shift+Meta";
 
 type PanelStyle = CSSProperties & Record<`--${string}`, string>;
 
@@ -45,11 +51,33 @@ function errorMessage(error: unknown) {
   return "Something went wrong";
 }
 
+/** Shown for a preset + model from the moment it starts until its first event arrives. */
+function pendingResult(sessionId: string, presetId: string, modelIndex: number): PanelResult {
+  return {
+    sessionId,
+    requestId: "",
+    presetId,
+    modelIndex,
+    phase: "thinking",
+    text: "",
+    label: "",
+    effort: null,
+    billing: "",
+    color: "",
+    durationMs: null,
+    costUsd: null,
+    warnings: [],
+    error: null,
+  };
+}
+
 /**
  * Content of the `assist-panel` window (Rewrite panel, hold Shift+Win). The backend opens it
- * next to the selection, sends `text-assist-panel-open` with the session, and streams one
- * `text-assist-panel` event per update. Results are cached by the backend per preset + model;
- * the view shows whichever result matches the selected preset and model.
+ * next to the selection and sends `text-assist-panel-open` with the session. The panel opens in a
+ * setup state: the user picks a preset and a model (or an ensemble profile), and nothing is sent
+ * until they start with a tap of Shift+Win (`text-assist-panel-chord`), the Start button or Enter
+ * in the custom instruction. Results stream in as `text-assist-panel` events and are kept per
+ * preset + model; changing the choice afterwards never starts a request by itself.
  */
 export function AssistPanelView() {
   const [init, setInit] = useState<PanelInit | null>(null);
@@ -63,7 +91,7 @@ export function AssistPanelView() {
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
   const [applying, setApplying] = useState(false);
   const [focusInputToken, setFocusInputToken] = useState(0);
-  /** Custom instruction last run in this session (reused when the model changes). */
+  /** Custom instruction last run in this session (prefills the input when Custom is chosen again). */
   const [lastCustom, setLastCustom] = useState<string | null>(null);
   useAppearance(init?.appearance ?? "notebook");
 
@@ -74,7 +102,7 @@ export function AssistPanelView() {
   const staleRef = useRef(new Set<string>());
   /** Custom instruction last sent for each custom|model key. */
   const customUsedRef = useRef(new Map<string, string>());
-  /** Custom instruction last run in this session (reused when the model changes). */
+  /** Custom instruction last run in this session. */
   const lastCustomRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -93,15 +121,16 @@ export function AssistPanelView() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
+  /** Sends one request for a preset + model; replaces whatever that combination showed. */
   const startRun = useCallback((runPresetId: string, runModelIndex: number, requestedFresh: boolean, instruction?: string) => {
     const session = sessionRef.current;
-    if (!session || !runPresetId) return;
+    if (!session || !runPresetId) return false;
     const key = resultKey(runPresetId, runModelIndex);
     let fresh = requestedFresh;
     let customInstruction: string | null = null;
     if (isCustomPreset(runPresetId)) {
       customInstruction = (instruction ?? lastCustomRef.current ?? "").trim() || null;
-      if (!customInstruction) return;
+      if (!customInstruction) return false;
       // The backend caches per preset + model; a different instruction needs a new request.
       if (customUsedRef.current.get(key) !== customInstruction) fresh = true;
       customUsedRef.current.set(key, customInstruction);
@@ -109,44 +138,26 @@ export function AssistPanelView() {
       setLastCustom(customInstruction);
     }
     const previous = latestRequestRef.current.get(key);
-    if (fresh && previous) staleRef.current.add(previous);
+    if (previous) staleRef.current.add(previous);
+    latestRequestRef.current.delete(key);
     setResults((current) => {
-      const existing = current[key];
       // Idempotent, so safe in an updater that StrictMode may call twice.
-      if (fresh && existing?.requestId) staleRef.current.add(existing.requestId);
-      if (!existing || (!fresh && existing.phase === "done")) return current;
-      const next = { ...current };
-      delete next[key];
-      return next;
+      const existing = current[key];
+      if (existing?.requestId) staleRef.current.add(existing.requestId);
+      return { ...current, [key]: pendingResult(session, runPresetId, runModelIndex) };
     });
     panelRun({ presetId: runPresetId, modelIndex: runModelIndex, customInstruction, fresh })
       .then((requestId) => {
-        // A replay (`fresh: false`) may reuse the cached request id, so only `fresh` runs
-        // retire the previous id (above, before the new run starts).
         if (sessionRef.current === session) latestRequestRef.current.set(key, requestId);
       })
       .catch((error: unknown) => {
         if (sessionRef.current !== session) return;
         setResults((current) => ({
           ...current,
-          [key]: {
-            sessionId: session,
-            requestId: "",
-            presetId: runPresetId,
-            modelIndex: runModelIndex,
-            phase: "failed",
-            text: "",
-            label: "",
-            effort: null,
-            billing: "",
-            color: "",
-            durationMs: null,
-            costUsd: null,
-            warnings: [],
-            error: errorMessage(error),
-          },
+          [key]: { ...pendingResult(session, runPresetId, runModelIndex), phase: "failed", error: errorMessage(error) },
         }));
       });
+    return true;
   }, []);
 
   const applyInit = useCallback((raw: unknown) => {
@@ -171,12 +182,12 @@ export function AssistPanelView() {
     setNotice(null);
     setApplying(false);
     resetEnsemble();
-    if (startsCustom && !firstInstruction) {
-      setFocusInputToken((token) => token + 1);
-      return;
-    }
-    startRun(next.activePresetId, next.activeModelIndex, false, firstInstruction || undefined);
-  }, [startRun, resetEnsemble]);
+    // Setup first: nothing runs until the user starts (Shift+Win, Start or Enter).
+    if (startsCustom && !firstInstruction) setFocusInputToken((token) => token + 1);
+  }, [resetEnsemble]);
+
+  /** Latest Start handler, so the chord listener never sees stale state. */
+  const startRef = useRef<() => boolean>(() => false);
 
   useEffect(() => {
     let disposed = false;
@@ -189,6 +200,11 @@ export function AssistPanelView() {
       const key = resultKey(result.presetId, result.modelIndex);
       setResults((current) => ({ ...current, [key]: result }));
     });
+    const unlistenChord = listen<unknown>(PANEL_CHORD_EVENT, (event) => {
+      const chord = normalizePanelChord(event.payload);
+      if (!chord || chord.sessionId !== sessionRef.current) return;
+      startRef.current();
+    });
     getPanelInit()
       .then((payload) => {
         if (!disposed && payload) applyInit(payload);
@@ -198,6 +214,7 @@ export function AssistPanelView() {
       disposed = true;
       unlistenOpen.then((unlisten) => unlisten()).catch(console.error);
       unlistenResult.then((unlisten) => unlisten()).catch(console.error);
+      unlistenChord.then((unlisten) => unlisten()).catch(console.error);
     };
   }, [applyInit, handleEnsembleResult]);
 
@@ -209,10 +226,11 @@ export function AssistPanelView() {
   const models = useMemo(() => init?.models ?? [], [init]);
   const model = models[modelIndex] ?? null;
   const custom = isCustomPreset(presetId);
+  const typedInstruction = draft.trim();
   const key = resultKey(presetId, modelIndex);
   const result = results[key] ?? null;
-  const awaitingInstruction = custom && !result && !lastCustom;
-  const phase = result?.phase ?? (awaitingInstruction ? null : "thinking");
+  const phase = result?.phase ?? null;
+  const running = isRunningPhase(phase);
   const hasText = !!result && result.text.length > 0 && (result.phase === "streaming" || result.phase === "done");
   const applicable = canApply(result) && !applying;
 
@@ -226,6 +244,7 @@ export function AssistPanelView() {
   const run = ensemble.run;
   const cards = cardCount(run, ensemble.results);
   const finished = finishedCount(ensemble.results);
+  const ensembleRunning = isEnsembleRunning(run, ensemble.results);
   const selectedCard = ensemble.results[ensemble.selected] ?? null;
   const cardHasText = !!selectedCard && selectedCard.text.length > 0 && (selectedCard.phase === "streaming" || selectedCard.phase === "done");
   const cardDiff = useMemo(
@@ -233,38 +252,98 @@ export function AssistPanelView() {
     [mode, ensemble.showDiff, cardHasText, selectedCard, init],
   );
   const preview = ensemble.preview;
-  const previewReady = preview?.status === "ready" && preview.profileId === ensemble.profileId ? preview.preview : null;
-  const runnable = !!previewReady && !previewReady.blocked && previewReady.members.length > 0 && !applying;
+  const ensembleInstruction = custom ? typedInstruction || null : null;
+  const gate: EnsembleGate = ensembleGate(preview, { profileId: ensemble.profileId, presetId, customInstruction: ensembleInstruction });
+
+  const presetName = (id: string | undefined) => presets.find((preset) => preset.id === id)?.name ?? "";
+
+  /** Opens or refreshes the ensemble setup for a preset (never runs). */
+  const showEnsemble = (forPresetId: string, instruction: string | null) => {
+    ensemble.open(profiles, forPresetId, isCustomPreset(forPresetId) ? instruction : null);
+  };
 
   const selectPreset = (id: string) => {
-    if (applying || !presets.some((preset) => preset.id === id)) return;
+    if (applying || mode === "cards" || !presets.some((preset) => preset.id === id)) return;
+    let nextDraft = draft;
     if (isCustomPreset(id)) {
-      setPresetId(id);
-      setDraft(lastCustom ?? "");
+      nextDraft = draft.trim() ? draft : lastCustom ?? "";
+      setDraft(nextDraft);
       setHistoryIndex(-1);
       setFocusInputToken((token) => token + 1);
-      if (id !== presetId && lastCustom) startRun(id, modelIndex, false);
-      return;
     }
     if (id === presetId) return;
     setPresetId(id);
-    startRun(id, modelIndex, false);
+    if (mode === "preview") showEnsemble(id, nextDraft.trim() || null);
+  };
+
+  const selectModel = (index: number) => {
+    if (applying || index < 0 || index >= models.length) return;
+    setModelIndex(index);
   };
 
   const switchModel = (delta: 1 | -1) => {
-    if (applying || models.length < 2) return;
-    const next = nextModelIndex(modelIndex, models.length, delta);
-    setModelIndex(next);
-    startRun(presetId, next, false);
+    if (models.length < 2) return;
+    selectModel(nextModelIndex(modelIndex, models.length, delta));
   };
 
+  const startEnsemble = (instruction: string | null) => {
+    const choice = { profileId: ensemble.profileId, presetId, customInstruction: instruction };
+    const check = ensembleGate(preview, choice);
+    if (!check.ok) {
+      if (check.stale) showEnsemble(presetId, instruction);
+      showNotice(check.reason);
+      return false;
+    }
+    const profile = profiles.find((item) => item.id === choice.profileId);
+    ensemble.start({ ...choice, profileName: profile?.name ?? choice.profileId, members: check.preview.members });
+    return true;
+  };
+
+  /**
+   * Start (tap of Shift+Win, the Start button, Enter in the custom instruction): runs the current
+   * choice. A start while the shown request is still running does nothing.
+   */
+  const startCurrent = () => {
+    if (!init || applying) return false;
+    if (mode === "cards") {
+      if (ensembleRunning) {
+        showNotice(RUNNING_NOTICE);
+        return false;
+      }
+      return ensemble.rerun();
+    }
+    if (custom && !typedInstruction) {
+      showNotice("Type an instruction first");
+      setFocusInputToken((token) => token + 1);
+      return false;
+    }
+    if (custom) {
+      setHistory((current) => rememberInstruction(current, typedInstruction));
+      setHistoryIndex(-1);
+    }
+    if (mode === "preview") return startEnsemble(custom ? typedInstruction : null);
+    if (running) {
+      showNotice(RUNNING_NOTICE);
+      return false;
+    }
+    const started = startRun(presetId, modelIndex, !!result, custom ? typedInstruction : undefined);
+    if (started) bodyRef.current?.focus();
+    return started;
+  };
+
+  useLayoutEffect(() => {
+    startRef.current = startCurrent;
+  });
+
+  /** R: another take of the shown result (fresh request). */
   const anotherTake = () => {
-    if (applying) return;
-    if (custom && !lastCustom) {
+    if (applying || !result) return;
+    const instruction = custom ? typedInstruction || lastCustom || "" : undefined;
+    if (custom && !instruction) {
       setFocusInputToken((token) => token + 1);
       return;
     }
-    startRun(presetId, modelIndex, true);
+    startRun(presetId, modelIndex, true, instruction);
   };
 
   const applyResult = (target: PanelResult | null) => {
@@ -296,21 +375,7 @@ export function AssistPanelView() {
       showNotice("No ensemble models yet. Add favorites or a profile under Models, Text models.");
       return;
     }
-    let instruction: string | null = null;
-    if (custom) {
-      instruction = lastCustom;
-      if (!instruction) {
-        showNotice("Run a custom instruction first, then press E");
-        setFocusInputToken((token) => token + 1);
-        return;
-      }
-    }
-    ensemble.open(profiles, presetId, instruction);
-  };
-
-  const confirmEnsemble = () => {
-    if (!runnable) return false;
-    return ensemble.confirm(profiles);
+    showEnsemble(presetId, ensembleInstruction);
   };
 
   const backToSingle = () => {
@@ -318,24 +383,20 @@ export function AssistPanelView() {
     window.requestAnimationFrame(() => bodyRef.current?.focus());
   };
 
-  const selectCard = (index: number) => {
-    if (index >= 0 && index < cards) ensemble.setSelected(index);
+  const toggleEnsemble = () => {
+    if (mode === "single") openEnsemble();
+    else backToSingle();
   };
 
-  const runCustom = () => {
-    const instruction = draft.trim();
-    if (!instruction || applying) return;
-    setHistory((current) => rememberInstruction(current, instruction));
-    setHistoryIndex(-1);
-    startRun(presetId, modelIndex, true, instruction);
-    bodyRef.current?.focus();
+  const selectCard = (index: number) => {
+    if (index >= 0 && index < cards) ensemble.setSelected(index);
   };
 
   const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") {
       event.preventDefault();
-      runCustom();
+      startCurrent();
     } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       if (history.length === 0) return;
       event.preventDefault();
@@ -351,7 +412,7 @@ export function AssistPanelView() {
     if (!init || event.isComposing) return;
     if (event.key === "Escape") {
       event.preventDefault();
-      // Preview and cards return to the single result first; Esc there closes.
+      // The ensemble setup and cards return to the single view first; Esc there closes.
       if (mode !== "single") backToSingle();
       else close();
       return;
@@ -416,9 +477,9 @@ export function AssistPanelView() {
       }
       return;
     }
-    if (event.key === "Enter" || (lower === "e" && !event.shiftKey)) {
+    if (lower === "e" && !event.shiftKey) {
       event.preventDefault();
-      confirmEnsemble();
+      backToSingle();
     }
   };
 
@@ -447,6 +508,9 @@ export function AssistPanelView() {
     } else if (lower === "r") {
       event.preventDefault();
       ensemble.rerun();
+    } else if (lower === "e") {
+      event.preventDefault();
+      backToSingle();
     }
   };
 
@@ -471,11 +535,10 @@ export function AssistPanelView() {
   const appName = targetAppName(init?.targetApp ?? null);
   const warnings = result && (result.phase === "done" || result.phase === "streaming") ? friendlyWarnings(result.warnings) : [];
   const status = mode === "preview"
-    ? previewStatusText(preview, previewReady)
+    ? previewStatusText(preview, gate)
     : mode === "cards"
       ? cardsStatusText(run?.error ?? null, finished, cards, ensemble.selected, selectedCard, applying)
-      : statusText(phase, result, awaitingInstruction, applying);
-  const presetName = (id: string | undefined) => presets.find((preset) => preset.id === id)?.name ?? "";
+      : statusText(phase, result, applying, custom && !typedInstruction, `${presetName(presetId)} with ${model?.label ?? "the model"}`);
 
   const closeButton = (
     <button type="button" className="ap-close" aria-label="Close" aria-keyshortcuts="Escape" title="Close (Esc)" onClick={close}>
@@ -489,57 +552,110 @@ export function AssistPanelView() {
   );
   const noticeText = notice && <span className="ap-notice" aria-hidden="true">{notice.text}</span>;
 
+  const presetChips = (withKeys: boolean) => (
+    <div className="ap-chips" role="toolbar" aria-label="Rewrite style">
+      {presets.map((preset, index) => (
+        <button
+          key={preset.id}
+          type="button"
+          className={preset.id === presetId ? "ap-chip on" : "ap-chip"}
+          aria-pressed={preset.id === presetId}
+          aria-keyshortcuts={withKeys ? String(index + 1) : undefined}
+          disabled={applying}
+          onClick={() => selectPreset(preset.id)}
+        >
+          <b>{index + 1}</b>{preset.name}
+        </button>
+      ))}
+    </div>
+  );
+
+  const ensembleToggle = (
+    <button
+      type="button"
+      className={mode === "single" ? "ap-chip ap-ens-toggle" : "ap-chip ap-ens-toggle on"}
+      aria-pressed={mode !== "single"}
+      aria-keyshortcuts="E"
+      disabled={applying || (mode === "single" && profiles.length === 0)}
+      title={profiles.length === 0 ? "Add favorites or an ensemble profile under Models, Text models" : "Run several models side by side (E)"}
+      onClick={toggleEnsemble}
+    >
+      <b>E</b>Ensemble
+    </button>
+  );
+
+  const customInput = custom && (
+    <div className="ap-custom">
+      <input
+        ref={inputRef}
+        type="text"
+        aria-label="Custom instruction"
+        placeholder="Describe the rewrite, then press Enter or Shift+Win"
+        maxLength={CUSTOM_INSTRUCTION_MAX_CHARS}
+        value={draft}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setHistoryIndex(-1);
+        }}
+        onKeyDown={onInputKeyDown}
+      />
+      {history.length > 0 && <span className="ap-custom-hint">↑↓ recent</span>}
+    </div>
+  );
+
   let content;
   if (!init) {
     content = (
-      <div className="ap-loading" role="status">
+      <div className="ap-loading" role="status" data-tauri-drag-region="deep">
         <Loader2 className="ap-spin" size={16} aria-hidden="true" />
         Waiting for the selection…
       </div>
     );
   } else if (mode === "preview") {
-    const memberCount = previewReady?.members.length ?? 0;
+    const memberCount = gate.ok ? gate.preview.members.length : 0;
     content = (
       <>
-        <div className="ap-topline">
-          <h1 className="ap-ens-title">
-            <span className="ap-ens-badge">Ensemble</span>
-            <span className="ap-ens-sub">{presetName(presetId)}</span>
-          </h1>
+        <div className="ap-topline" data-tauri-drag-region="deep" data-testid="panel-drag-region">
+          {presetChips(false)}
           {closeButton}
         </div>
-        {profiles.length > 1 && (
+        {customInput}
+        <div className="ap-ens-row" data-tauri-drag-region="deep">
           <ProfileChips profiles={profiles} profileId={ensemble.profileId} disabled={applying} onSelect={ensemble.selectProfile} />
-        )}
+          {ensembleToggle}
+        </div>
         <div
           ref={bodyRef}
           className="ap-body"
           role="region"
-          aria-label="Ensemble preview"
+          aria-label="Ensemble setup"
           aria-busy={preview?.status === "loading"}
           tabIndex={0}
         >
           <EnsemblePreviewView state={preview} />
+          <p className="ap-original-mini" title={init.original}>
+            <span className="ap-preview-label">Selected text</span> {init.original}
+          </p>
         </div>
         {liveRegion}
         <footer className="ap-footer">
-          {profiles.length > 1 && <span className="ap-hint"><kbd>{presetKeyRange(profiles.length)}</kbd> profile</span>}
-          {!previewReady?.blocked && (
-            <button type="button" className="ap-hint" onClick={confirmEnsemble} disabled={!runnable} aria-keyshortcuts="Enter E">
-              <kbd>Enter</kbd> run {memberCount > 0 ? `${memberCount} model${memberCount === 1 ? "" : "s"}` : "ensemble"}
-            </button>
-          )}
+          <span className="ap-hint"><kbd>{presetKeyRange(profiles.length)}</kbd> profile</span>
           <button type="button" className="ap-hint" onClick={backToSingle} aria-keyshortcuts="Escape">
             <kbd>Esc</kbd> back
           </button>
           {noticeText}
+          <StartButton
+            label={memberCount > 0 ? `Start ${memberCount} model${memberCount === 1 ? "" : "s"}` : "Start ensemble"}
+            disabled={applying || (!gate.ok && !gate.stale)}
+            onClick={startCurrent}
+          />
         </footer>
       </>
     );
   } else if (mode === "cards" && run) {
     content = (
       <>
-        <div className="ap-topline">
+        <div className="ap-topline" data-tauri-drag-region="deep" data-testid="panel-drag-region">
           <h1 className="ap-ens-title">
             <span className="ap-ens-badge">Ensemble · {finished} / {cards}</span>
             <span className="ap-ens-sub">{[presetName(run.presetId), run.profileName].filter(Boolean).join(" · ")}</span>
@@ -551,7 +667,7 @@ export function AssistPanelView() {
             <div className="ap-failed">
               <strong>Could not start the ensemble</strong>
               <span>{run.error}</span>
-              <span className="ap-retry">Press R to try again or Esc to go back.</span>
+              <span className="ap-retry">Press Shift+Win or R to try again, or Esc to go back.</span>
             </div>
           </div>
         ) : (
@@ -588,112 +704,112 @@ export function AssistPanelView() {
             <kbd>Esc</kbd> back
           </button>
           {noticeText}
+          <StartButton
+            label={ensembleRunning ? "Running…" : "Run again"}
+            disabled={applying || ensembleRunning}
+            onClick={startCurrent}
+          />
         </footer>
       </>
     );
   } else {
     content = (
-          <>
-            <div className="ap-topline">
-              <div className="ap-chips" role="toolbar" aria-label="Rewrite style">
-                {presets.map((preset, index) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className={preset.id === presetId ? "ap-chip on" : "ap-chip"}
-                    aria-pressed={preset.id === presetId}
-                    aria-keyshortcuts={String(index + 1)}
-                    onClick={() => selectPreset(preset.id)}
-                  >
-                    <b>{index + 1}</b>{preset.name}
-                  </button>
-                ))}
-              </div>
-              {closeButton}
-            </div>
+      <>
+        <div className="ap-topline" data-tauri-drag-region="deep" data-testid="panel-drag-region">
+          {presetChips(true)}
+          {closeButton}
+        </div>
 
-            {custom && (
-              <div className="ap-custom">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  aria-label="Custom instruction"
-                  placeholder="Describe the rewrite, then press Enter"
-                  maxLength={CUSTOM_INSTRUCTION_MAX_CHARS}
-                  value={draft}
-                  onChange={(event) => {
-                    setDraft(event.target.value);
-                    setHistoryIndex(-1);
-                  }}
-                  onKeyDown={onInputKeyDown}
-                />
-                {history.length > 0 && <span className="ap-custom-hint">↑↓ recent</span>}
-              </div>
-            )}
+        {customInput}
 
-            <div className="ap-header" data-testid="panel-header">
-              <span className="ap-dot" aria-hidden="true" />
-              <span className="ap-model">
-                {modelLabel}
-                {effort && <span className="ap-effort"> · {effort}</span>}
-              </span>
-              {models.length > 1 && <span className="ap-model-count">{modelIndex + 1}/{models.length}</span>}
-              {meta && <span className="ap-meta">{meta}</span>}
-              {appName && <span className="ap-app" title="Target app">→ {appName}</span>}
-            </div>
+        <div className="ap-ens-row" data-tauri-drag-region="deep">
+          <div className="ap-chips ap-model-chips" role="toolbar" aria-label="Model">
+            {models.map((item, index) => {
+              const chipStyle: PanelStyle = { "--model-color": safeColor(item.color) };
+              return (
+                <button
+                  key={`${index}-${item.key}`}
+                  type="button"
+                  className={index === modelIndex ? "ap-chip ap-model-chip on" : "ap-chip ap-model-chip"}
+                  style={chipStyle}
+                  aria-pressed={index === modelIndex}
+                  aria-label={item.effort ? `${item.label} · ${item.effort}` : item.label}
+                  title={billingLabel(item.billing) || undefined}
+                  disabled={applying}
+                  onClick={() => selectModel(index)}
+                >
+                  <span className="ap-dot" aria-hidden="true" />
+                  {item.label}
+                  {item.effort && <span className="ap-effort"> · {item.effort}</span>}
+                </button>
+              );
+            })}
+          </div>
+          {ensembleToggle}
+        </div>
 
-            <div
-              ref={bodyRef}
-              className="ap-body"
-              role="region"
-              aria-label={showDiff ? "Changes against the original" : "Rewritten text"}
-              aria-busy={phase === "thinking" || phase === "streaming"}
-              tabIndex={0}
-              data-phase={phase ?? "idle"}
-            >
-              <Body
-                phase={phase}
-                result={result}
-                hasText={hasText}
-                awaitingInstruction={awaitingInstruction}
-                showDiff={showDiff}
-                diff={diff}
-              />
-            </div>
+        <div className="ap-header" data-testid="panel-header" data-tauri-drag-region="deep">
+          <span className="ap-dot" aria-hidden="true" />
+          <span className="ap-model">
+            {modelLabel}
+            {effort && <span className="ap-effort"> · {effort}</span>}
+          </span>
+          {models.length > 1 && <span className="ap-model-count">{modelIndex + 1}/{models.length}</span>}
+          {meta && <span className="ap-meta">{meta}</span>}
+          {appName && <span className="ap-app" title="Target app">→ {appName}</span>}
+        </div>
 
-            <WarningList warnings={warnings} />
+        <div
+          ref={bodyRef}
+          className="ap-body"
+          role="region"
+          aria-label={!result ? "Selected text" : showDiff ? "Changes against the original" : "Rewritten text"}
+          aria-busy={running}
+          tabIndex={0}
+          data-phase={phase ?? "setup"}
+        >
+          {result ? (
+            <Body phase={result.phase} result={result} hasText={hasText} showDiff={showDiff} diff={diff} />
+          ) : (
+            <Setup original={init.original} needsInstruction={custom && !typedInstruction} />
+          )}
+        </div>
 
-            {liveRegion}
+        <WarningList warnings={warnings} />
 
-            <footer className="ap-footer">
-              <span className="ap-hint"><kbd>{presetKeyRange(presets.length)}</kbd> preset</span>
-              <button type="button" className="ap-hint" onClick={() => switchModel(1)} disabled={models.length < 2 || applying} aria-keyshortcuts="Tab">
-                <kbd>Tab</kbd> model
-              </button>
-              <button type="button" className="ap-hint" onClick={anotherTake} disabled={applying} aria-keyshortcuts="R">
-                <kbd>R</kbd> again
-              </button>
-              <button
-                type="button"
-                className="ap-hint"
-                onClick={() => setShowDiff((current) => !current)}
-                aria-pressed={showDiff}
-                aria-keyshortcuts="D"
-              >
-                <kbd>D</kbd> diff
-              </button>
-              <button type="button" className="ap-hint" onClick={() => apply()} disabled={!applicable} aria-keyshortcuts="Enter">
-                <kbd>Enter</kbd> apply
-              </button>
-              <button type="button" className="ap-hint" onClick={openEnsemble} disabled={applying || profiles.length === 0} aria-keyshortcuts="E">
-                <kbd>E</kbd> ensemble
-              </button>
-              <button type="button" className="ap-hint" onClick={close} aria-keyshortcuts="Escape">
-                <kbd>Esc</kbd> close
-              </button>
-              {noticeText}
-            </footer>
-          </>
+        {liveRegion}
+
+        <footer className="ap-footer">
+          <span className="ap-hint"><kbd>{presetKeyRange(presets.length)}</kbd> preset</span>
+          <button type="button" className="ap-hint" onClick={() => switchModel(1)} disabled={models.length < 2 || applying} aria-keyshortcuts="Tab">
+            <kbd>Tab</kbd> model
+          </button>
+          <button type="button" className="ap-hint" onClick={anotherTake} disabled={applying || !result} aria-keyshortcuts="R">
+            <kbd>R</kbd> again
+          </button>
+          <button
+            type="button"
+            className="ap-hint"
+            onClick={() => setShowDiff((current) => !current)}
+            aria-pressed={showDiff}
+            aria-keyshortcuts="D"
+          >
+            <kbd>D</kbd> diff
+          </button>
+          <button type="button" className="ap-hint" onClick={() => apply()} disabled={!applicable} aria-keyshortcuts="Enter">
+            <kbd>Enter</kbd> apply
+          </button>
+          <button type="button" className="ap-hint" onClick={close} aria-keyshortcuts="Escape">
+            <kbd>Esc</kbd> close
+          </button>
+          {noticeText}
+          <StartButton
+            label={running ? "Running…" : result ? "Run again" : "Start"}
+            disabled={applying || running}
+            onClick={startCurrent}
+          />
+        </footer>
+      </>
     );
   }
 
@@ -704,12 +820,29 @@ export function AssistPanelView() {
   );
 }
 
-function previewStatusText(preview: PreviewState | null, ready: EnsemblePreview | null) {
+/** The primary action; a tap of Shift+Win does the same. */
+function StartButton({ label, disabled, onClick }: { label: string; disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="ap-start"
+      onClick={onClick}
+      disabled={disabled}
+      aria-keyshortcuts={START_KEYS}
+      title={`${label} (tap Shift+Win)`}
+    >
+      <span>{label}</span>
+      <kbd aria-hidden="true">Shift+Win</kbd>
+    </button>
+  );
+}
+
+function previewStatusText(preview: PreviewState | null, gate: EnsembleGate) {
   if (!preview || preview.status === "loading") return "Estimating the ensemble cost";
-  if (preview.status === "error") return `Ensemble unavailable: ${preview.error}`;
-  if (!ready) return "";
-  if (ready.blocked) return "Over the cost limit. This ensemble cannot run.";
-  return `Press Enter to run ${ready.members.length} models`;
+  if (preview.status === "error") return preview.error;
+  if (gate.ok) return `Press Shift+Win or Start to run ${gate.preview.members.length} models`;
+  if (gate.stale) return "Press Shift+Win to check the cost again";
+  return gate.reason;
 }
 
 function cardsStatusText(error: string | null, finished: number, count: number, selected: number, card: PanelResult | null, applying: boolean) {
@@ -722,9 +855,8 @@ function cardsStatusText(error: string | null, finished: number, count: number, 
   return `${finished} of ${count} finished. Card ${selected + 1} ${selectedText}`;
 }
 
-function statusText(phase: PanelResult["phase"] | null, result: PanelResult | null, awaiting: boolean, applying: boolean) {
+function statusText(phase: PanelResult["phase"] | null, result: PanelResult | null, applying: boolean, needsInstruction: boolean, choice: string) {
   if (applying) return "Applying";
-  if (awaiting) return "Type an instruction and press Enter";
   switch (phase) {
     case "thinking":
       return "Thinking";
@@ -737,37 +869,49 @@ function statusText(phase: PanelResult["phase"] | null, result: PanelResult | nu
     case "cancelled":
       return "Cancelled";
     default:
-      return "";
+      return needsInstruction
+        ? "Type an instruction, then press Enter or Shift+Win"
+        : `Ready. Press Shift+Win or Start to run ${choice}`;
   }
 }
 
+/** Setup state: the selection, before anything was sent. */
+function Setup({ original, needsInstruction }: { original: string; needsInstruction: boolean }) {
+  return (
+    <div className="ap-setup">
+      <p className="ap-placeholder">
+        {needsInstruction
+          ? "Type an instruction above, then press Enter or Shift+Win."
+          : "Choose a style and a model, then tap Shift+Win or press Start."}
+      </p>
+      <div className="ap-text ap-original" data-testid="panel-original">{original}</div>
+    </div>
+  );
+}
+
 type BodyProps = {
-  phase: PanelResult["phase"] | null;
-  result: PanelResult | null;
+  phase: PanelResult["phase"];
+  result: PanelResult;
   hasText: boolean;
-  awaitingInstruction: boolean;
   showDiff: boolean;
   diff: DiffPart[] | null;
 };
 
-function Body({ phase, result, hasText, awaitingInstruction, showDiff, diff }: BodyProps) {
-  if (awaitingInstruction) {
-    return <p className="ap-placeholder">Type an instruction above and press Enter.</p>;
-  }
+function Body({ phase, result, hasText, showDiff, diff }: BodyProps) {
   if (phase === "failed") {
     return (
       <div className="ap-failed">
         <strong>Failed</strong>
-        <span>{result?.error || "Request failed"}</span>
-        <span className="ap-retry">Press R to try again.</span>
+        <span>{result.error || "Request failed"}</span>
+        <span className="ap-retry">Press Shift+Win or R to try again.</span>
       </div>
     );
   }
   if (phase === "cancelled") {
-    return <p className="ap-placeholder">Cancelled. Press R to try again.</p>;
+    return <p className="ap-placeholder">Cancelled. Press Shift+Win or R to try again.</p>;
   }
-  if (!hasText || !result) {
-    if (phase === "done") return <p className="ap-placeholder">The model returned no text. Press R to try again.</p>;
+  if (!hasText) {
+    if (phase === "done") return <p className="ap-placeholder">The model returned no text. Press Shift+Win or R to try again.</p>;
     return (
       <div className="ap-thinking">
         <Loader2 className="ap-spin" size={16} aria-hidden="true" />

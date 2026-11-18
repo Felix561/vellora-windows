@@ -16,7 +16,7 @@ import {
   type PanelPhase,
   type PanelResult,
 } from "../lib/assistPanel";
-import type { PreviewState } from "../lib/assistEnsemble";
+import { CUSTOM_NEEDS_INSTRUCTION, type PreviewState } from "../lib/assistEnsemble";
 import type { DiffPart } from "../lib/wordDiff";
 
 type ModelStyle = CSSProperties & Record<`--${string}`, string>;
@@ -122,6 +122,7 @@ export function EnsemblePreviewView({ state }: { state: PreviewState | null }) {
     );
   }
   if (state.status === "error") {
+    if (state.error === CUSTOM_NEEDS_INSTRUCTION) return <p className="ap-placeholder">{state.error}.</p>;
     return (
       <div className="ap-failed">
         <strong>Ensemble unavailable</strong>
@@ -155,7 +156,8 @@ export function EnsemblePreviewView({ state }: { state: PreviewState | null }) {
           <strong>Over the cost limit</strong>
           <span>
             This run is estimated at {formatUsd(preview.estimatedUsd)}, above the per-run limit of {formatUsd(preview.limitUsd)}.
-            Choose another profile, select less text, or raise the limit under Models, Text models, Ensemble profiles.
+            It will not start. Choose another profile, select less text, or raise the limit under Models, Text models,
+            Ensemble profiles.
           </span>
         </div>
       )}
